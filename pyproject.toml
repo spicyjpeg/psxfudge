@@ -1,0 +1,39 @@
+[build-system]
+build-backend = "setuptools.build_meta"
+requires      = [
+	"Cython",
+	"numpy",
+	"setuptools",
+	"wheel"
+]
+
+[project]
+name            = "psxfudge"
+version         = "0.1.0"
+description     = "Asset building toolkit for PlayStation 1 development"
+readme          = "README.md"
+license.text    = "GPLv3 or later"
+authors         = [ { name = "spicyjpeg" } ]
+requires-python = ">=3.10"
+dependencies    = [
+	"av     >= 8.0.3",
+	"numpy  >= 1.19.4",
+	"Pillow >= 8.2.0"
+]
+classifiers     = [
+	"Intended Audience :: Developers",
+	"License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+	"Topic :: Multimedia :: Graphics :: Graphics Conversion",
+	"Topic :: Multimedia :: Sound/Audio :: Conversion",
+	"Topic :: Multimedia :: Video :: Conversion",
+	"Topic :: Software Development :: Build Tools",
+	"Topic :: Utilities"
+]
+
+[project.urls]
+"Homepage" = "https://github.com/spicyjpeg/psxfudge"
+
+[project.scripts]
+fudgebundle = "psxfudge.fudgebundle:main"
+fudgestream = "psxfudge.fudgestream:main"
+fudgetim    = "psxfudge.fudgetim:main"
