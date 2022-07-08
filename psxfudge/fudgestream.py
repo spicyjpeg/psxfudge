@@ -4,7 +4,7 @@
 
 import logging, json
 from struct   import Struct
-from argparse import ArgumentParser, FileType
+from argparse import FileType
 
 import av
 from ._avenc import convertAudioStream
@@ -14,8 +14,7 @@ DEFAULT_OPTIONS = {
 	"chunklength": 0x6800,
 	"samplerate":  44100,
 	"channels":    2,
-	"loopstart":   -1.0,
-	"loopend":     -1.0
+	"loopoffset":  -1.0
 }
 
 VAG_HEADER_STRUCT  = Struct("> 4s I 4x 2I 12x 16s")
@@ -39,8 +38,8 @@ def _createParser():
 		"-s", "--set",
 		action  = "append",
 		type    = str,
-		help    = "Set a conversion option (use JSON syntax to specify value)",
-		metavar = "option=value"
+		help    = "Set a property (use JSON syntax to specify value)",
+		metavar = "property=value"
 	)
 
 	group = parser.add_argument_group("File paths")

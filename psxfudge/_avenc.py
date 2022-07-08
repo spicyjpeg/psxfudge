@@ -52,14 +52,9 @@ def convertAudioStream(avFile, options):
 	chunkLength = int(options["chunklength"])
 	sampleRate  = int(options["samplerate"])
 	channels    = int(options["channels"])
-	loopStart   = float(options["loopstart"])
-	loopEnd     = float(options["loopend"])
+	loopOffset  = float(options["loopoffset"])
 
-	encoder = SPUBlockEncoder(
-		round(loopStart * sampleRate),
-		round(loopEnd * sampleRate),
-		chunkLength
-	)
+	encoder = SPUBlockEncoder(round(loopOffset * sampleRate), chunkLength)
 
 	for frame in _importAudio(
 		avFile,
@@ -90,8 +85,7 @@ def convertSound(avFile, options):
 
 	sampleRate = int(options["samplerate"])
 	channels   = int(options["channels"])
-	loopStart  = float(options["loopstart"])
-	loopEnd    = float(options["loopend"])
+	loopOffset = float(options["loopoffset"])
 
 	frames  = _importAudio(avFile, sampleRate, channels)
 	pcmData = next(frames).to_ndarray()
@@ -103,16 +97,13 @@ def convertSound(avFile, options):
 		]
 
 	monoLength = pcmData.shape[1] // 28 * 16
-	encoder    = SPUBlockEncoder(
-		round(loopStart * sampleRate),
-		round(loopEnd * sampleRate),
-		monoLength
-	)
+	encoder    = SPUBlockEncoder(round(loopOffset * sampleRate), monoLength)
 
 	# Set the loop flag at the end of the data to ensure the SPU jumps to the
 	# dummy block in SPU RAM after playing the sound (if another loop point is
 	# not set).
 	output = bytearray(monoLength * channels)
-	encoder.encode(pcmData, output, LoopFlags.LOOP)
+	flags  = LoopFlags.SUSTAIN if (loopOffset >= 0.0) else 0
+	encoder.encode(pcmData, output, LoopFlags.LOOP | flags)
 
 	return output, monoLength if (channels > 1) else 0

@@ -48,8 +48,8 @@ def _parseXMLAtlas(path):
 				int(texture.get("y", 0)),
 				width,
 				height,
-				int(texture.get("frameX", 0)),
-				int(texture.get("frameY", 0)),
+				-int(texture.get("frameX", 0)),
+				-int(texture.get("frameY", 0)),
 				int(texture.get("frameWidth", width)),
 				int(texture.get("frameHeight", height)),
 				True
@@ -79,7 +79,7 @@ def _parseJSONAtlas(path):
 
 		for name, texture in atlas["frames"].items():
 			source = texture["frame"]
-			dest   = texture.get("spriteSourceSize", source)
+			dest   = texture.get("spriteSourceSize", {})
 
 			# Split the frame number (4 digits) from the texture name.
 			if _match := ANIM_FRAME_REGEX.match(name):
@@ -189,9 +189,7 @@ def importImage(path):
 
 						if trim and (dstX or dstY or dstW != srcW or dstH != srcH):
 							canvas = Image.new(image.mode, ( dstW, dstH ))
-							canvas.paste(cropped,
-								( -dstX, -dstY, -dstX + srcW, -dstY + srcH )
-							)
+							canvas.paste(cropped, ( dstX, dstY ))
 
 							frameList.append(canvas)
 						else:

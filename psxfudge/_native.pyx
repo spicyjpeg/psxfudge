@@ -63,7 +63,8 @@ def quantizeImage(
 		#raise ValueError("source array's last dimension must be 4 (RGBA)")
 
 	cdef liq_attr *attr = liq_attr_create()
-	liq_set_speed(attr, 3)
+	liq_set_speed(attr, 1)
+	#liq_set_quality(attr, 0, 100)
 	liq_set_max_colors(attr, maxColors)
 	liq_set_min_posterization(attr, 8 - targetBPP)
 
@@ -419,21 +420,15 @@ cdef class SPUBlockEncoder:
 	# get it to work without instantly crashing. Cython bug perhaps?
 	cdef ADPCMEncoder leftEncoder, rightEncoder
 
-	cdef public int loopStart, loopEnd, chunkStride
+	cdef public int loopOffset, chunkStride
 
-	def __cinit__(
-		self,
-		int loopStart   = -1,
-		int loopEnd     = -1,
-		int chunkStride = 0
-	):
+	def __cinit__(self, int loopOffset = -1, int chunkStride = 0):
 		self.leftEncoder.bitsPerSample  = 4
 		self.leftEncoder.numFilters     = 5
 		self.rightEncoder.bitsPerSample = 4
 		self.rightEncoder.numFilters    = 5
 
-		self.loopStart   = loopStart
-		self.loopEnd     = loopEnd
+		self.loopOffset  = loopOffset
 		self.chunkStride = chunkStride
 
 	def encode(
@@ -459,16 +454,15 @@ cdef class SPUBlockEncoder:
 			else:
 				flags = 0
 
-			if (self.loopStart >= 0) and (self.loopStart < 28):
+			if (self.loopOffset >= 0) and (self.loopOffset < 28):
 				flags |= LoopFlags.SET_LOOP_POINT
-			if (self.loopEnd >= 0) and (self.loopEnd < 28):
-				if self.loopStart < self.loopEnd:
-					flags |= LoopFlags.LOOP | LoopFlags.SUSTAIN
-				else:
-					flags |= LoopFlags.LOOP
+			#if (self.loopEnd >= 0) and (self.loopEnd < 28):
+				#if self.loopOffset < self.loopEnd:
+					#flags |= LoopFlags.LOOP | LoopFlags.SUSTAIN
+				#else:
+					#flags |= LoopFlags.LOOP
 
-			self.loopStart = max(self.loopStart - 28, -1)
-			self.loopEnd   = max(self.loopEnd   - 28, -1)
+			self.loopOffset = max(self.loopOffset - 28, -1)
 
 			# Process the block for both channels.
 			offset = index * 28

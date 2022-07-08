@@ -3,8 +3,7 @@
 # (C) 2022 spicyjpeg
 
 import logging, json
-from struct   import Struct
-from argparse import ArgumentParser, FileType
+from struct import Struct
 
 import numpy
 from ._image   import convertImage
@@ -18,10 +17,11 @@ DEFAULT_OPTIONS = {
 	"scale":       1.0,
 	"bpp":         4,
 	"palette":     "auto",
-	"dither":      0.2,
+	"dither":      0.5,
 	"scalemode":   "lanczos",
 	"alpharange":  ( 0x20, 0xe0 ),
-	"blackvalue":  0x0421,
+	"blackvalue":  ( 1, 1, 1, 0 ),
+	"cropmode":    "none",
 	"padding":     0,
 	"flipmode":    "preferUnflipped", # Unused
 	# .TIM specific options
@@ -45,8 +45,8 @@ def _createParser():
 		"-s", "--set",
 		action  = "append",
 		type    = str,
-		help    = "Set a conversion option (use JSON syntax to specify value)",
-		metavar = "option=value"
+		help    = "Set a property (use JSON syntax to specify value)",
+		metavar = "property=value"
 	)
 
 	group = parser.add_argument_group("File paths")

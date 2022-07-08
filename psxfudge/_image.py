@@ -210,8 +210,9 @@ def convertImage(image, options):
 	palette    = PALETTES[options["palette"].lower()]
 	dither     = float(options["dither"])
 	scaleMode  = SCALE_MODES[options["scalemode"].lower()]
-	alphaRange = map(int, options["alpharange"])
-	blackValue = int(options["blackvalue"])
+	alphaRange = sorted(map(int, options["alpharange"]))
+	blackValue = tuple(map(int, options["blackvalue"]))
+	cropMode   = options["cropmode"].lower()
 	padding    = int(options["padding"])
 	flipModes  = FLIP_MODES[options["flipmode"].lower()]
 
@@ -236,17 +237,27 @@ def convertImage(image, options):
 			int(_image.height * scale)
 		), scaleMode)
 
-	# Trim any empty space around the image (but save the number of pixels
-	# trimmed, so the margin can be restored on the PS1 side when drawing the
-	# image). The padding option optionally re-adds an empty border around the
-	# image as a workaround for GPU sampling quirks.
-	margin = _image.getbbox()
-	if margin is None:
-		raise RuntimeError(f"({name}) image is empty")
+	# Trim any empty borders around the image (but save the number of pixels
+	# trimmed when cropMode = "preserveMargin", so the margin can be restored
+	# on the PS1 side when drawing the image). The padding option optionally
+	# re-adds an empty border around the image as a workaround for GPU sampling
+	# quirks.
+	if cropMode in ( "preservemargin", "removemargin" ):
+		if (margin := _image.getbbox()) is None:
+			raise RuntimeError(f"({name}) image is empty")
 
-	_image    = _image.crop(margin)
+		_image = _image.crop(margin)
+
+	if cropMode != "preservemargin":
+		margin = 0, 0
+
 	data      = None
 	numColors = 2 ** bpp
+
+	_blackValue  = (blackValue[0] & 31)
+	_blackValue |= (blackValue[1] & 31) << 5
+	_blackValue |= (blackValue[2] & 31) << 10
+	_blackValue |= (blackValue[3] &  1) << 15
 
 	if bpp == 16:
 		if _image.mode == "P":
@@ -255,7 +266,7 @@ def convertImage(image, options):
 		data = toPS1ColorSpace2D(
 			numpy.array(_image.convert("RGBA"), numpy.uint8),
 			*alphaRange,
-			blackValue
+			_blackValue
 		)
 
 		return ImageWrapper(data, None, margin[0:2], padding, flipModes)
@@ -317,6 +328,6 @@ def convertImage(image, options):
 	# on the palette.
 	mapping  = _palette.view(numpy.uint32).flatten().argsort()
 	data     = mapping.argsort().astype(numpy.uint8)[data]
-	_palette = toPS1ColorSpace(_palette[mapping], *alphaRange, blackValue)
+	_palette = toPS1ColorSpace(_palette[mapping], *alphaRange, _blackValue)
 
 	return ImageWrapper(data, _palette, margin[0:2], padding, flipModes)

@@ -4,7 +4,7 @@
 
 import os, re, logging, json
 from struct   import Struct
-from argparse import ArgumentParser, FileType
+from argparse import FileType
 
 import numpy, av
 from PIL       import Image
@@ -22,18 +22,18 @@ DEFAULT_OPTIONS = {
 	"scale":       1.0,
 	"bpp":         4,
 	"palette":     "auto",
-	"dither":      0.2,
+	"dither":      0.5,
 	"scalemode":   "lanczos",
 	"alpharange":  ( 0x20, 0xe0 ),
-	"blackvalue":  0x0421,
+	"blackvalue":  ( 1, 1, 1, 0 ),
+	"cropmode":    "preserveMargin",
 	"padding":     0,
 	"flipmode":    "preferUnflipped",
 	# Sound options
 	"chunklength": 0x6800,
-	"samplerate":  44100,
+	"samplerate":  0,
 	"channels":    1,
-	"loopstart":   -1.0,
-	"loopend":     -1.0
+	"loopoffset":  -1.0
 }
 
 ## Main
@@ -71,15 +71,15 @@ def _createParser():
 		"-s", "--set",
 		action  = "append",
 		type    = str,
-		help    = "Override a default option (use JSON syntax to specify value)",
-		metavar = "option=value"
+		help    = "Set a property for all entries except ones that override it (use JSON syntax to specify value)",
+		metavar = "property=value"
 	)
 	group.add_argument(
 		"-f", "--force-set",
 		action  = "append",
 		type    = str,
-		help    = "Override an option for all entries, ignoring values in the config file (use JSON syntax to specify value)",
-		metavar = "option=value"
+		help    = "Override a property for all entries, ignoring values in the config file (use JSON syntax to specify value)",
+		metavar = "property=value"
 	)
 
 	group = parser.add_argument_group("File paths")
@@ -160,7 +160,7 @@ def main():
 						continue
 
 					bundle.addTexture(
-						name.format(name = textureName),
+						name.format(sprite = textureName),
 						images,
 						_type
 					)
