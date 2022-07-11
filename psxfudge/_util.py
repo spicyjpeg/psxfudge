@@ -4,6 +4,7 @@
 import os, re, math, logging, json
 from time      import gmtime
 from itertools import chain
+from ast       import literal_eval
 from struct    import Struct
 from glob      import iglob
 from tempfile  import mkdtemp
@@ -161,11 +162,18 @@ def _parseKeyValue(strings, lowerCase = False, separator = "="):
 	options = {}
 
 	for item in strings:
+		if not item.strip():
+			continue
+
 		key, value = item.split(separator, 1)
+		value      = value.strip()
+
 		if lowerCase:
 			key = key.lower()
+		if value.startswith(( "\"", "'" )):
+			value = literal_eval(value)
 
-		options[key.strip()] = value.strip()
+		options[key.strip()] = value
 
 	return options
 

@@ -10,7 +10,7 @@ import numpy, av
 from PIL       import Image
 from ._file    import BundleBuilder
 from ._image   import convertImage
-from ._parsers import importImage
+from ._parsers import importKeyValue, importImage
 from ._avenc   import convertSound
 from ._util    import unpackNibbles2D, globPaths, parseJSON, ArgParser
 
@@ -33,7 +33,10 @@ DEFAULT_OPTIONS = {
 	"chunklength": 0x6800,
 	"samplerate":  0,
 	"channels":    1,
-	"loopoffset":  -1.0
+	"loopoffset":  -1.0,
+	# String table options
+	"encoding":    "ascii",
+	"align":       4
 }
 
 ## Main
@@ -179,11 +182,15 @@ def main():
 
 			case "sound":
 				with av.open(_from, "r") as _file:
-					bundle.addSound(
-						name,
-						*convertSound(_file, entry),
-						int(entry["samplerate"])
-					)
+					bundle.addSound(name, *convertSound(_file, entry))
+
+			case "stringtable":
+				bundle.addStringTable(
+					name,
+					importKeyValue(_from),
+					entry["encoding"],
+					int(entry["align"])
+				)
 
 			case _:
 				with open(entry["from"], "rb") as _file:
@@ -209,11 +216,11 @@ def main():
 			#Image.fromarray(page,  "L").save(f"{prefix}_8.png")
 			Image.fromarray(page4, "L").save(f"{prefix}_4.png")
 
-	data = bundle.generate()
-	logging.info(f"final bundle size: {len(data):7d} bytes")
+	bundle.generate()
 
 	with args.outputFile as _file:
-		_file.write(data)
+		for section in bundle.serialize():
+			_file.write(section)
 
 if __name__ == "__main__":
 	main()

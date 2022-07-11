@@ -10,25 +10,27 @@ from zlib      import crc32
 from gzip      import GzipFile
 
 from ._packer import buildTexpages
-from ._util   import alignToMultiple, hash32, bestHashTableLength
+from ._util   import alignToMultiple, alignMutableToMultiple, hash32, bestHashTableLength
 
 ## Index file generator
 
-#INDEX_HEADER_MAGIC  = b"freaky on a friday night yea"
-INDEX_HEADER_MAGIC  = b"[psxfudge bundle format]v1.0"
-INDEX_HEADER_STRUCT = Struct("< 28s 4I 2H")
-INDEX_ENTRY_STRUCT  = Struct("< 3I 2H")
+INDEX_HEADER_STRUCT    = Struct("< 2H")
+INDEX_ENTRY_STRUCT     = Struct("< I 2H")
+INDEX_EXT_ENTRY_STRUCT = Struct("< 3I 2H")
 
 class IndexBuilder:
 	"""
-	Builder class used to generate index (hash table) data. This data is used
-	in several places (e.g. bundle headers) to store file/entry lookup tables.
+	Builder class used to generate extended index (hash table) data. This data
+	is used in several places (e.g. bundle headers) to store file/entry lookup
+	tables.
 	"""
 
 	def __init__(self):
 		self.entries = {}
+		self.buckets = None
+		self.chained = None
 
-	def addEntry(self, name, offset, length, entryType):
+	def addEntry(self, name, offset, length = 0, entryType = 0):
 		if (_hash := hash32(name)) in self.entries:
 			raise IndexError(f"hash table already contains an entry named {name}")
 
@@ -46,65 +48,85 @@ class IndexBuilder:
 		numBuckets = len(self.entries)
 		numBuckets = 2 ** math.ceil(math.log2(numBuckets))
 
-		buckets = [ None for _ in range(numBuckets) ]
-		chained = []
-		used    = 0
+		self.buckets = [ None for _ in range(numBuckets) ]
+		self.chained = []
+		used = 0
 
 		for _hash, entry in self.entries.items():
 			hashMod = _hash % numBuckets
 
-			if buckets[hashMod] is None:
-				buckets[hashMod] = entry
+			if self.buckets[hashMod] is None:
+				self.buckets[hashMod] = entry
 				used += 1
 				continue
 
 			# If the bucket is already occupied, go through its chain to find
 			# the last chained item then link the new entry to its .next.
-			lastEntry = buckets[hashMod]
+			lastEntry = self.buckets[hashMod]
 			while lastEntry[4] != 0xffff:
-				lastEntry = chained[lastEntry[4] - numBuckets]
+				lastEntry = self.chained[lastEntry[4] - numBuckets]
 
-			lastEntry[4] = numBuckets + len(chained)
-			chained.append(entry)
+			lastEntry[4] = numBuckets + len(self.chained)
+			self.chained.append(entry)
 
-		logging.debug(f"hash table usage: {100 * used / numBuckets:.1f}% + {len(chained)} chained")
-		return buckets, chained
+		logging.debug(f"hash table usage: {100 * used / numBuckets:.1f}% + {len(self.chained)} chained")
 
-	def generate(self, sectionLengths):
-		buckets, chained = self._buildTable()
-		length           = INDEX_HEADER_STRUCT.size + \
-			INDEX_ENTRY_STRUCT.size * (len(buckets) + len(chained))
+	def generate(self, extended = False):
+		self._buildTable()
+
+		length = len(self.buckets) + len(self.chained)
+		if extended:
+			length *= INDEX_EXT_ENTRY_STRUCT.size
+		else:
+			length *= INDEX_ENTRY_STRUCT.size
+
+		return INDEX_HEADER_STRUCT.size + length
+
+	def serialize(self, extended = False, globalOffset = 0):
+		#self._buildTable()
 
 		data = bytearray(INDEX_HEADER_STRUCT.pack(
-			INDEX_HEADER_MAGIC,               # .magic
-			length,                           # .indexLength
-			*(sectionLengths or ( 0, 0, 0 )), # .sectionLength[3]
-			len(buckets),                     # .numBuckets
-			len(chained)                      # .numChained
+			len(self.buckets), # .numBuckets
+			len(self.chained)  # .numChained
 		))
 
-		for entry in chain(buckets, chained):
-			_entry = entry or ( 0, 0, 0, 0, 0xffff )
-			data.extend(INDEX_ENTRY_STRUCT.pack(*_entry))
+		for entry in chain(self.buckets, self.chained):
+			if entry:
+				_entry     = entry.copy()
+				_entry[1] += globalOffset
+			else:
+				_entry = 0, 0, 0, 0, 0xffff
+
+			if extended:
+				data.extend(INDEX_EXT_ENTRY_STRUCT.pack(*_entry))
+			else:
+				data.extend(INDEX_ENTRY_STRUCT.pack(
+					_entry[0], # .hash
+					_entry[1], # .offset
+					_entry[4]  # .next
+				))
 
 		return data
 
 ## Bundle file generator
 
+BUNDLE_HEADER_MAGIC   = b"[psxfudge bundle format]v1.0"
+BUNDLE_HEADER_STRUCT  = Struct("< 28s 4I")
 BG_HEADER_STRUCT      = Struct("< 4H")
 TEXTURE_HEADER_STRUCT = Struct("< 4B")
 TEXTURE_FRAME_STRUCT  = Struct("< 6B H")
 SOUND_HEADER_STRUCT   = Struct("< 4H")
 
 ENTRY_TYPES = {
-	"file":     0xf11e,
-	"bundle":   0xda7a, # Currently unused
-	"dll":      0xc0de,
-	"texture":  0x0001, # Progressive animated texture
-	"itexture": 0x8001, # Interlaced animated texture
-	"bg":       0x0002, # Progressive background (in main RAM)
-	"ibg":      0x8002, # Interlaced background (in main RAM)
-	"sound":    0x0003
+	"file":        0xf11e,
+	"bundle":      0xda7a, # Currently unused
+	"dll":         0xc0de,
+	"texture":     0x0001, # Progressive animated texture
+	"itexture":    0x8001, # Interlaced animated texture
+	"bg":          0x0002, # Progressive background (in main RAM)
+	"ibg":         0x8002, # Interlaced background (in main RAM)
+	"sound":       0x0003,
+	"stringtable": 0x0004
 }
 
 DATA_SIZE      = 0x180000    # Approximately 1.5 MB for main data section
@@ -123,9 +145,11 @@ class BundleBuilder(IndexBuilder):
 
 		self.textures    = {}
 		self.allTextures = []
-		self.vramData    = bytearray()
-		self.spuData     = bytearray()
-		self.data        = bytearray()
+
+		self.header   = None
+		self.vramData = bytearray()
+		self.spuData  = bytearray()
+		self.data     = bytearray()
 
 	def addEntry(self, name, data, _type):
 		if (len(self.data) + len(data)) > DATA_SIZE:
@@ -204,6 +228,36 @@ class BundleBuilder(IndexBuilder):
 		self.addEntry(name, header, "sound")
 		self.spuData.extend(data)
 
+	def addStringTable(self, name, entries, encoding, align):
+		table   = IndexBuilder()
+		blob    = bytearray()
+		offsets = {}
+
+		for key, value in entries.items():
+			# Check if the string was already added to the blob.
+			if value in offsets:
+				table.addEntry(key, offsets[value])
+				continue
+
+			# Save the current length of the blob, then append the string and a
+			# null terminator to it. This is basically a fancy implementation
+			# of a stack-like allocator.
+			offset = len(blob)
+			blob.extend(value.encode(encoding))
+			blob.append(0)
+
+			if align:
+				alignMutableToMultiple(blob, align)
+
+			offsets[value] = offset
+			table.addEntry(key, offset)
+
+		length = table.generate(False)
+		data   = table.serialize(False, length)
+		data.extend(blob)
+
+		self.addEntry(name, data, "stringtable")
+
 	def buildVRAM(self, *options, **kwOptions):
 		for page in buildTexpages(self.allTextures, *options, **kwOptions):
 			# Reorder the page data into 64x256 sections (for larger pages) and
@@ -231,16 +285,24 @@ class BundleBuilder(IndexBuilder):
 				)
 
 	def generate(self):
-		lengths = len(self.vramData), len(self.spuData), len(self.data)
-		header  = super().generate(lengths)
+		headerLength = super().generate(True) + BUNDLE_HEADER_STRUCT.size
+		lengths      = len(self.vramData), len(self.spuData), len(self.data)
+
+		self.header = bytearray(BUNDLE_HEADER_STRUCT.pack(
+			BUNDLE_HEADER_MAGIC,
+			headerLength,
+			*lengths,
+		))
+		self.header.extend(super().serialize(True))
+
+		for section in ( self.header, self.vramData, self.spuData, self.data ):
+			alignMutableToMultiple(section, SECTOR_SIZE)
 
 		logging.info("uncompressed section sizes:")
-		logging.info(f"header:    {len(header):7d} bytes")
+		logging.info(f"header:    {headerLength:7d} bytes")
 		logging.info(f"VRAM data: {lengths[0]:7d} bytes ({100 * lengths[0] / VRAM_DATA_SIZE:4.1f}%)")
 		logging.info(f"SPU data:  {lengths[1]:7d} bytes ({100 * lengths[1] / SPU_DATA_SIZE:4.1f}%)")
 		logging.info(f"main data: {lengths[2]:7d} bytes ({100 * lengths[2] / DATA_SIZE:4.1f}%)")
 
-		return b"".join((
-			alignToMultiple(section, SECTOR_SIZE)
-			for section in ( header, self.vramData, self.spuData, self.data )
-		))
+	def serialize(self):
+		yield from ( self.header, self.vramData, self.spuData, self.data )

@@ -5,7 +5,28 @@ import os, re, json
 from xml.etree import ElementTree
 
 from PIL    import Image
-from ._util import globPaths, parseText, parseJSON
+from ._util import globPaths, parseText, parseJSON, parseKeyValue
+
+## Key-value file parser
+
+KEY_VALUE_EXTENSIONS = {
+	".json": parseJSON,
+	".txt":  parseKeyValue,
+	".ini":  parseKeyValue,
+	".lang": parseKeyValue
+}
+
+def importKeyValue(path):
+	if (ext := os.path.splitext(path)[1].lower()) not in KEY_VALUE_EXTENSIONS:
+		raise RuntimeError(f"unsupported extension for key-value files: {ext}")
+
+	with open(path, "rt") as _file:
+		obj = KEY_VALUE_EXTENSIONS[ext](_file.read())
+
+	if type(obj) is dict:
+		return obj
+
+	return dict(obj)
 
 ## Texture atlas parser
 

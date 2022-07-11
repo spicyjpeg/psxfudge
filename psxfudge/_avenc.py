@@ -80,24 +80,27 @@ def convertSound(avFile, options):
 	"""
 	Similar to encodeAudio() but deinterleaves the converted buffers,
 	concatenates the left and right channel data, adds loop flags at the end
-	and returns a ( data, rightChannelOffset ) tuple.
+	and returns a ( data, rightChannelOffset, sampleRate ) tuple.
 	"""
 
 	sampleRate = int(options["samplerate"])
 	channels   = int(options["channels"])
 	loopOffset = float(options["loopoffset"])
 
-	frames  = _importAudio(avFile, sampleRate, channels)
-	pcmData = next(frames).to_ndarray()
+	frame   = next(_importAudio(avFile, sampleRate, channels))
+	pcmData = frame.to_ndarray()
 
-	if align := (pcmData.shape[1] % 28):
+	if (align := (pcmData.shape[1] % 28)):
 		pcmData = numpy.c_[
 			pcmData,
 			numpy.zeros(( channels, 28 - align ), numpy.int16)
 		]
 
 	monoLength = pcmData.shape[1] // 28 * 16
-	encoder    = SPUBlockEncoder(round(loopOffset * sampleRate), monoLength)
+	encoder    = SPUBlockEncoder(
+		round(loopOffset * frame.sample_rate),
+		monoLength
+	)
 
 	# Set the loop flag at the end of the data to ensure the SPU jumps to the
 	# dummy block in SPU RAM after playing the sound (if another loop point is
@@ -106,4 +109,4 @@ def convertSound(avFile, options):
 	flags  = LoopFlags.SUSTAIN if (loopOffset >= 0.0) else 0
 	encoder.encode(pcmData, output, LoopFlags.LOOP | flags)
 
-	return output, monoLength if (channels > 1) else 0
+	return output, monoLength if (channels > 1) else 0, frame.sample_rate
