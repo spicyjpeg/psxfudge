@@ -1,14 +1,14 @@
 # -*- coding: utf-8 -*-
 # (C) 2022 spicyjpeg
 
-import os, re, math, logging, json
-from time      import gmtime
-from itertools import chain
-from ast       import literal_eval
-from struct    import Struct
-from glob      import iglob
-from tempfile  import mkdtemp
-from argparse  import ArgumentParser
+import os, sys, re, math, logging, json
+from time        import gmtime
+from itertools   import chain
+from collections import UserDict
+from ast         import literal_eval
+from struct      import Struct
+from tempfile    import mkdtemp
+from argparse    import ArgumentParser, FileType, Action
 
 import numpy
 
@@ -112,70 +112,90 @@ def toMSDOSTime(unixTime = None):
 
 ## String manipulation
 
-def parseRange(_range, separator = "-"):
+RANGE_ITEM_REGEX = re.compile(r"([0-9]+)(?:\s*?-\s*?([0-9]+)(?:\s*?:\s*?([0-9]+))?)?")
+
+def _isWithinBounds(value, minValue = None, maxValue = None):
+	if minValue is not None and value < minValue:
+		return False
+	if maxValue is not None and value > maxValue:
+		return False
+
+	return True
+
+def parseRange(_range, minValue = None, maxValue = None):
 	"""
-	Parses a string containing space-delimited integers, optionally with dashes
-	indicating ranges (e.g. "1 7 3-5", which translates to [ 1, 7, 3, 4, 5 ])
-	and yields all values.
+	Parses a string containing space-delimited positive integers, optionally
+	with dashes specifying ranges and colons prefixing strides (e.g.
+	"1 8-10 3-7:2") and yields all values (e.g. [ 1, 8, 9, 10, 3, 5, 7 ]).
 	"""
 
-	for item in _range.split(" "):
-		if not item:
-			continue
+	if type(_range) is not str:
+		for value in _range:
+			if _isWithinBounds(value, minValue, maxValue):
+				yield value
 
-		if separator in item:
-			start, end = item.split(separator)
+		return
+
+	for _match in RANGE_ITEM_REGEX.finditer(_range):
+		start, end, stride = _match.groups()
+
+		if end is None:
+			value = int(start, 0)
+
+			if _isWithinBounds(value, minValue, maxValue):
+				yield value
+		else:
+			_start, _end = int(start, 0), int(end, 0)
+
 			yield from range(
-				int(start, 0),
-				int(end, 0)
+				(_start if minValue is None else max(minValue, _start)),
+				(_end   if maxValue is None else min(maxValue, _end)) + 1,
+				1       if stride   is None else int(stride, 0)
 			)
 
-		yield int(item, 0)
-
-def isWithinRange(value, _range, separator = "-"):
+def isWithinRange(value, _range):
 	"""
-	Parses a string containing space-delimited integers, optionally with dashes
-	indicating ranges (e.g. "1 7 3-5") and checks whether the given value is
-	listed.
+	Parses a string containing space-delimited positive integers, optionally
+	with dashes specifying ranges and colons prefixing strides (e.g.
+	"1 8-10 3-7:2") and checks whether the given value is within the range.
 	"""
 
-	for item in _range.split(" "):
-		if not item:
-			continue
+	if type(_range) is not str:
+		return (value in _range)
 
-		if separator in item:
-			start, end = item.split(separator)
-			if value >= int(start, 0) and value <= int(end, 0):
+	for _match in RANGE_ITEM_REGEX.finditer(_range):
+		start, end, stride = _match.groups()
+
+		if end is None:
+			if value == int(start, 0):
 				return True
+		else:
+			_start, _end = int(start, 0), int(end, 0)
 
-		if value == int(item, 0):
-			return True
+			if value >= _start and value <= _end:
+				if stride is None:
+					return True
+				if not ((value - _start) % int(stride, 0)):
+					return True
 
 	return False
 
-def _parseKeyValue(strings, lowerCase = False, separator = "="):
-	"""
-	Takes a list of "key=value" strings and returns a dict. All keys can
-	optionally be transformed to lower case.
-	"""
-
-	options = {}
+def _parseKeyValue(strings, constructor = dict, separator = "="):
+	obj = constructor()
 
 	for item in strings:
 		if not item.strip():
 			continue
 
 		key, value = item.split(separator, 1)
-		value      = value.strip()
+		key, value = key.strip(), value.strip()
 
-		if lowerCase:
-			key = key.lower()
 		if value.startswith(( "\"", "'" )):
 			value = literal_eval(value)
 
-		options[key.strip()] = value
+		obj[key] = value
 
-	return options
+	return obj
 
 ## Data structure utilities
 
@@ -204,13 +224,12 @@ def bestHashTableLength(hashes, minLoadFactor = 0.7, chainPenalty = 0.5):
 
 ## Path utilities
 
-def globPaths(paths):
+def normalizePaths(paths):
 	if type(paths) is str:
-		yield from iglob(paths)
-		return
-
-	for path in paths:
-		yield from iglob(path)
+		yield os.path.normpath(paths.strip())
+	else:
+		for path in paths:
+			yield os.path.normpath(path.strip())
 
 ## Text file parsing
 
@@ -237,26 +256,77 @@ def parseText(text, commentMode = "shell"):
 def parseJSON(text, *a, **k):
 	return json.loads(parseText(text, "js"), *a, **k)
 
-def parseKeyValue(text, lowerCase = False, separator = "="):
+def parseKeyValue(text, constructor = dict, separator = "="):
 	strings = parseText(text, "shell").splitlines()
 
-	return _parseKeyValue(strings, lowerCase, separator)
+	return _parseKeyValue(strings, constructor, separator)
+
+## Case-insensitive dictionary
+
+def _normalizeKey(key):
+	return key.strip().lower() if (type(key) is str) else key
+
+class CaseDict(UserDict):
+	"""
+	A dictionary with stripped, case-insensitive key collation. The case of the
+	last key used to set an item is preserved.
+	"""
+
+	def __setitem__(self, key, value):
+		self.data[_normalizeKey(key)] = key, value
+
+	def __getitem__(self, key):
+		return self.data[_normalizeKey(key)][1]
+
+	def __delitem__(self, key):
+		del self.data[_normalizeKey(key)]
+
+	def __contains__(self, key):
+		return (_normalizeKey(key) in self.data)
+
+	def __iter__(self):
+		return (key for key, value in self.data.values())
+
+	#def __repr__(self):
+		#return f"CaseDict({repr(dict(self.data.values()))})"
+
+	def values(self):
+		return (value for key, value in self.data.values())
+
+	def items(self):
+		return self.data.values()
 
 ## Command line argument parser
+
+class _ListPropertiesAction(Action):
+	def __init__(self, **namedArgs):
+		namedArgs["nargs"] = 0
+		super().__init__(**namedArgs)
+
+	def __call__(self, parser, namespace, values, option):
+		maxLength  = max(map(len, parser.defaultProperties.keys()))
+		properties = "\n".join(
+			f"  {key.ljust(maxLength)} = {json.dumps(value)}"
+			for key, value in parser.defaultProperties.items()
+		)
+
+		parser.exit(0, f"Default property values:\n{properties}")
 
 class ArgParser(ArgumentParser):
 	"""
 	An enhanced subclass of argparse.ArgumentParser that automatically sets up
-	logging and a few common options.
+	logging, common options and handles property parsing.
 	"""
 
-	def __init__(self, description):
+	def __init__(self, description, defaultProperties = None):
 		super().__init__(
-			description = description,
-			epilog      = "This script is part of the PSXFudge toolkit.",
-			add_help    = False
+			description  = description,
+			epilog       = "This tool is part of the PSXFudge toolkit.",
+			add_help     = False,
+			allow_abbrev = False
 			#fromfile_prefix_chars = "@"
 		)
+		self.defaultProperties = defaultProperties
 
 		group = self.add_argument_group("Tool options")
 		group.add_argument(
@@ -270,8 +340,30 @@ class ArgParser(ArgumentParser):
 			help   = "Increase logging verbosity (-v = info, -vv = info + debug)"
 		)
 
-	def parse_args(self, args = None):
-		args = super().parse_args(args)
+		if defaultProperties is not None:
+			group.add_argument(
+				"-L", "--list-properties",
+				action = _ListPropertiesAction,
+				help   = "List all supported properties and their default values and exit"
+			)
+
+			group = self.add_argument_group("Configuration options")
+			group.add_argument(
+				"-s", "--set",
+				action  = "append",
+				type    = str,
+				help    = "Set the value of a property (use JSON syntax to specify value)",
+				metavar = "property=value"
+			)
+			group.add_argument(
+				"-p", "--properties",
+				type    = FileType("rt"),
+				help    = "Read properties from the root object of the specified JSON file",
+				metavar = "file"
+			)
+
+	def parse(self, args = None):
+		args = self.parse_args(args)
 
 		logging.basicConfig(
 			format = "[%(funcName)-13s %(levelname)-7s] %(message)s",
@@ -281,6 +373,25 @@ class ArgParser(ArgumentParser):
 				logging.DEBUG    # -vv
 			)[min(args.verbose or 0, 2)]
 		)
+
+		if self.defaultProperties is not None:
+			properties = CaseDict(self.defaultProperties)
+
+			if args.properties:
+				with args.properties as _file:
+					try:
+						properties.update(parseJSON(_file.read()))
+					except:
+						self.error(f"failed to parse properties from {args.properties.name}")
+			if args.set:
+				for arg in args.set:
+					try:
+						key, value = arg.split("=", 1)
+						properties[key] = json.loads(value)
+					except:
+						self.error(f"invalid property specification: {arg}")
+
+			args.properties = properties
 
 		return args
 

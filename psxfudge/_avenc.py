@@ -49,10 +49,10 @@ def convertAudioStream(avFile, options):
 	depending on whether the output is mono or stereo.
 	"""
 
-	chunkLength = int(options["chunklength"])
-	sampleRate  = int(options["samplerate"])
+	chunkLength = int(options["chunkLength"])
+	sampleRate  = int(options["sampleRate"])
 	channels    = int(options["channels"])
-	loopOffset  = float(options["loopoffset"])
+	loopOffset  = float(options["loopOffset"])
 
 	encoder = SPUBlockEncoder(round(loopOffset * sampleRate), chunkLength)
 
@@ -83,9 +83,9 @@ def convertSound(avFile, options):
 	and returns a ( data, rightChannelOffset, sampleRate ) tuple.
 	"""
 
-	sampleRate = int(options["samplerate"])
+	sampleRate = int(options["sampleRate"])
 	channels   = int(options["channels"])
-	loopOffset = float(options["loopoffset"])
+	loopOffset = float(options["loopOffset"])
 
 	frame   = next(_importAudio(avFile, sampleRate, channels))
 	pcmData = frame.to_ndarray()

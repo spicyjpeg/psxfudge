@@ -6,11 +6,70 @@ from struct    import Struct
 from itertools import chain
 from shutil    import copyfileobj
 from tempfile  import SpooledTemporaryFile
-from zlib      import crc32
-from gzip      import GzipFile
 
+import numpy
 from ._packer import buildTexpages
-from ._util   import alignToMultiple, alignMutableToMultiple, hash32, bestHashTableLength
+from ._util   import alignToMultiple, alignMutableToMultiple, hash32, bestHashTableLength, CaseDict
+
+## Standard PS1 formats (.TIM, .VAG)
+
+TIM_HEADER_STRUCT  = Struct("< 2I")
+TIM_HEADER_VERSION = 0x10
+TIM_SECTION_STRUCT = Struct("< I 4H")
+
+VAG_HEADER_STRUCT  = Struct("> 4s I 4s 2I 12x 16s")
+VAG_HEADER_MAGIC   = b"VAGp"
+VAGI_HEADER_MAGIC  = b"VAGi"
+VAG_HEADER_VERSION = 0x20
+
+GPU_DMA_BUFFER_SIZE = 128
+SPU_DMA_BUFFER_SIZE =  64
+
+def generateTIM(image):
+	"""
+	Converts an ImageWrapper object to a .TIM image file and returns a byte
+	array.
+	"""
+
+	data = bytearray(TIM_HEADER_STRUCT.pack(
+		TIM_HEADER_VERSION,
+		# Bit 3 signals the presence of a palette section in the file
+		{ 4: 0x08, 8: 0x09, 16: 0x02 }[image.bpp]
+	))
+
+	# Generate the palette section.
+	if image.bpp != 16:
+		paletteData = image.palette.view(numpy.uint16)
+
+		if int(image.px) % 16:
+			logging.warning("palette X offset is not aligned to 16 pixels")
+
+		data.extend(TIM_SECTION_STRUCT.pack(
+			TIM_SECTION_STRUCT.size + paletteData.size * 2,
+			image.px,
+			image.py,
+			paletteData.size,
+			1
+		))
+		data.extend(paletteData.tobytes())
+
+	# Generate the image section.
+	imageData = image.getPackedData()
+
+	#if imageData.size % GPU_DMA_BUFFER_SIZE:
+		#logging.warning("packed image size is not a multiple of DMA buffer size")
+
+	data.extend(TIM_SECTION_STRUCT.pack(
+		TIM_SECTION_STRUCT.size + imageData.size,
+		int(image.x),
+		int(image.y),
+		*image.getPackedSize()
+	))
+	data.extend(imageData.tobytes())
+
+	return data
+
+# TODO: move .VAG generator here
 
 ## Index file generator
 
@@ -117,7 +176,7 @@ TEXTURE_HEADER_STRUCT = Struct("< 4B")
 TEXTURE_FRAME_STRUCT  = Struct("< 6B H")
 SOUND_HEADER_STRUCT   = Struct("< 4H")
 
-ENTRY_TYPES = {
+ENTRY_TYPES = CaseDict({
 	"file":        0xf11e,
 	"bundle":      0xda7a, # Currently unused
 	"dll":         0xc0de,
@@ -127,7 +186,7 @@ ENTRY_TYPES = {
 	"ibg":         0x8002, # Interlaced background (in main RAM)
 	"sound":       0x0003,
 	"stringtable": 0x0004
-}
+})
 
 DATA_SIZE      = 0x180000    # Approximately 1.5 MB for main data section
 VRAM_DATA_SIZE = 0x8000 * 20 # 20 texpages

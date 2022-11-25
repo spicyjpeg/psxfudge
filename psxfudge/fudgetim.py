@@ -2,135 +2,91 @@
 # -*- coding: utf-8 -*-
 # (C) 2022 spicyjpeg
 
-import logging, json
-from struct import Struct
+import logging
+from pathlib import Path
 
-import numpy
-from ._image   import convertImage
-from ._parsers import importImage
-from ._util    import ArgParser
+from ._parsers  import importImages
+from ._image    import convertImage
+from ._builders import generateTIM
+from ._util     import normalizePaths, ArgParser
 
-DEFAULT_OPTIONS = {
+DEFAULT_PROPERTIES = {
 	"match":       ".*",
-	"skipframes":  0,
-	"crop":        ( 0, 0, 1e10, 1e10 ),
+	"frames":      "0-255",
+	"crop":        ( 0, 0, 0x10000, 0x10000 ),
 	"scale":       1.0,
 	"bpp":         4,
 	"palette":     "auto",
 	"dither":      0.5,
-	"scalemode":   "lanczos",
-	"alpharange":  ( 0x20, 0xe0 ),
-	"blackvalue":  ( 1, 1, 1, 0 ),
-	"cropmode":    "none",
+	"scaleMode":   "lanczos",
+	"alphaRange":  ( 0x20, 0xe0 ),
+	"blackValue":  ( 1, 1, 1, 0 ),
+	"cropMode":    "none",
 	"padding":     0,
-	"flipmode":    "preferUnflipped", # Unused
+	"flipMode":    "preferUnflipped", # Unused
 	# .TIM specific options
-	"imagepos":    ( 0, 0 ),
-	"palettepos":  ( 0, 0 )
+	"imagePos":    ( 0, 0 ),
+	"palettePos":  ( 0, 0 )
 }
-
-TIM_HEADER_STRUCT  = Struct("< 2I")
-TIM_HEADER_VERSION = 0x0010
-TIM_SECTION_STRUCT = Struct("< I 4H")
-
-GPU_DMA_BUFFER_SIZE = 128 # 32 words
 
 ## Main
 
 def _createParser():
-	parser = ArgParser("Converts an image into the .TIM format.")
-
-	group = parser.add_argument_group("Configuration options")
-	group.add_argument(
-		"-s", "--set",
-		action  = "append",
-		type    = str,
-		help    = "Set a property (use JSON syntax to specify value)",
-		metavar = "property=value"
-	)
+	parser = ArgParser("Converts one or more images into the .TIM format.", DEFAULT_PROPERTIES)
 
 	group = parser.add_argument_group("File paths")
 	group.add_argument(
 		"inputFile",
-		type = importImage,
-		help = "path to JSON entry list"
+		type  = str,
+		nargs = "+",
+		help  = "Paths to input images"
 	)
 	group.add_argument(
 		"outputFile",
 		type = str,
-		help = "Path to .TIM file to be generated; {name} and {frame} placeholders can be specified"
+		help = "Path to file(s) to be generated; {name} and {frame} placeholders can be specified"
 	)
 
 	return parser
 
 def main():
 	parser = _createParser()
-	args   = parser.parse_args()
+	args   = parser.parse()
 
-	options = DEFAULT_OPTIONS.copy()
+	x,  y  = args.properties["imagePos"]
+	px, py = args.properties["palettePos"]
 
-	for arg in (args.set or []):
-		key, value = arg.split("=", 1)
-		options[key.strip().lower()] = json.loads(value)
+	images = tuple(importImages(
+		normalizePaths(args.inputFile),
+		args.properties
+	))
 
-	x,  y  = options["imagepos"]
-	px, py = options["palettepos"]
+	# Ensure the placeholders are present in the output path if there are name
+	# or frame number conflicts.
+	if len(images) > 1 and ("{name" not in args.outputFile):
+		parser.error("more than one image to convert but the output path doesn't contain a {name} placeholder")
 
-	images       = tuple(args.inputFile)
-	name, frames = images[0]
+	for name, frames in images:
+		if len(frames) > 1 and ("{frame" not in args.outputFile):
+			parser.error(f"image '{name}' has more than one frame but the output path doesn't contain a {{frame}} placeholder")
 
-	# Ensure only one image (or a spritesheet that contains only one image) was
-	# passed. If the image has more than one frame, ensure that the {frame}
-	# placeholder is present in the output path.
-	if len(images) > 1:
-		parser.error("more than one input image found, use '-s match=\"<regex>\"' to specify a regex that only matches a single image")
+	for name, frames in images:
+		logging.info(f"processing {name} (frames: {len(frames)})")
 
-	if len(frames) > 1 and args.outputFile.find("{frame") == -1:
-		parser.error("image has more than one frame but the output path doesn't contain a {frame} placeholder")
-
-	for index, frame in enumerate(frames):
-		path  = args.outputFile.format(name = name, frame = index)
-		image = convertImage(frame, options)
-
-		timData = bytearray(TIM_HEADER_STRUCT.pack(
-			TIM_HEADER_VERSION,
-			# Bit 3 signals the presence of a palette section in the file
-			{ 4: 0x08, 8: 0x09, 16: 0x02 }[image.bpp]
-		))
-
-		# Generate the palette section.
-		if image.bpp != 16:
-			palette = image.palette.view(numpy.uint16)
-			data    = palette.tobytes()
-
-			timData.extend(TIM_SECTION_STRUCT.pack(
-				TIM_SECTION_STRUCT.size + palette.size * 2,
-				int(px),
-				int(py),
-				palette.size,
-				1
+		for index, frame in enumerate(frames):
+			image = convertImage(frame, args.properties)
+			path  = Path(args.outputFile.format(
+				name  = name,
+				frame = index
 			))
-			timData.extend(data)
 
-			if int(px) % 16:
-				logging.warning("the palette's X offset is not aligned to 16 pixels")
+			image.x,  image.y  = int(x),  int(y)
+			image.px, image.py = int(px), int(py)
 
-		# Generate the image section.
-		data = image.getPackedData().tobytes()
+			with path.open("wb") as _file:
+				_file.write(generateTIM(image))
 
-		timData.extend(TIM_SECTION_STRUCT.pack(
-			TIM_SECTION_STRUCT.size + palette.size,
-			int(x),
-			int(y),
-			*image.getPackedSize()
-		))
-		timData.extend(data)
-
-		#if len(data) % GPU_DMA_BUFFER_SIZE:
-			#logging.warning("packed image size is not a multiple of DMA buffer size, LoadImage() may hang!")
-
-		with open(path, "wb") as _file:
-			_file.write(timData)
+			logging.info(f"saved {path.name}")
 
 if __name__ == "__main__":
 	main()

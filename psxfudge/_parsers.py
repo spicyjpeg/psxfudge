@@ -1,70 +1,57 @@
 # -*- coding: utf-8 -*-
 # (C) 2022 spicyjpeg
 
-import os, re, json
-from xml.etree import ElementTree
+import os, re, json, logging
+from collections import defaultdict
+from pathlib     import Path
+from xml.etree   import ElementTree
 
 from PIL    import Image
-from ._util import globPaths, parseText, parseJSON, parseKeyValue
+from ._util import parseRange, parseText, parseJSON, parseKeyValue, CaseDict
 
 ## Key-value file parser
 
-KEY_VALUE_EXTENSIONS = {
+KEY_VALUE_EXTENSIONS = CaseDict({
 	".json": parseJSON,
 	".txt":  parseKeyValue,
 	".ini":  parseKeyValue,
 	".lang": parseKeyValue
-}
+})
 
-def importKeyValue(path):
-	if (ext := os.path.splitext(path)[1].lower()) not in KEY_VALUE_EXTENSIONS:
-		raise RuntimeError(f"unsupported extension for key-value files: {ext}")
+def importKeyValue(paths, constructor = dict):
+	obj = constructor()
 
-	with open(path, "rt") as _file:
-		obj = KEY_VALUE_EXTENSIONS[ext](_file.read())
+	for path in map(Path, paths):
+		if path.suffix not in KEY_VALUE_EXTENSIONS:
+			raise RuntimeError(f"unsupported extension for key-value files: {path.suffix}")
 
-	if type(obj) is dict:
-		return obj
+		with path.open("rt") as _file:
+			obj.update(KEY_VALUE_EXTENSIONS[path.suffix](_file.read()))
 
-	return dict(obj)
+	return obj
 
-## Texture atlas parser
+## Texture atlas parsers
 
-ANIM_FRAME_REGEX  = re.compile(r"^(.+?)\s*([0-9]{4})$")
+ANIM_FRAME_REGEX  = re.compile(r"^(.+?)\s*([0-9]{1,4})$")
 ATLAS_ENTRY_REGEX = re.compile(r"^\s*(.+?)\s*=\s*([0-9]+)\s*([0-9]+)\s*([0-9]+)\s*([0-9]+)", re.MULTILINE)
 
 def _parseXMLAtlas(path):
-	atlasDir, base = os.path.split(path)
-	atlasName      = os.path.splitext(base)[0]
-
 	root = ElementTree.parse(path).getroot()
 
 	for atlas in root.iter("TextureAtlas"):
+		imagePath = atlas.get("imagePath", f"{path.stem}.png")
+
 		# If the image path is not absolute, assume it is relative to the atlas
 		# file's location.
-		imagePath = atlas.get("imagePath", f"{atlasName}.png")
-		if not os.path.isabs(imagePath):
-			imagePath = os.path.join(atlasDir, imagePath)
-
-		image   = Image.open(imagePath, "r")
-		entries = {}
+		image   = Image.open(path.parent.joinpath(imagePath), "r")
+		entries = defaultdict(dict)
 
 		for texture in atlas.iter("SubTexture"):
-			name = texture.get("name")
-
-			# Split the frame number (4 digits) from the texture name.
-			if _match := ANIM_FRAME_REGEX.match(name):
-				name, frame = _match.groups()
-			else:
-				frame = 0
-
-			if name not in entries:
-				entries[name] = {}
-
+			name   = texture.get("name")
 			width  = int(texture.get("width", image.width))
 			height = int(texture.get("height", image.height))
 
-			entries[name][int(frame)] = (
+			entry = (
 				int(texture.get("x", 0)),
 				int(texture.get("y", 0)),
 				width,
@@ -76,48 +63,41 @@ def _parseXMLAtlas(path):
 				True
 			)
 
+			# Split the frame number from the texture name.
+			if _match := ANIM_FRAME_REGEX.match(name):
+				name, frame = _match.groups()
+				entries[name][int(frame)] = entry
+			else:
+				frames = entries[name]
+				frames[len(frames)] = entry
+
 		yield image, entries
 
 def _parseJSONAtlas(path):
-	atlasDir, base = os.path.split(path)
-	atlasName      = os.path.splitext(base)[0]
-
-	with open(path, "rt") as _file:
+	with path.open("rt") as _file:
 		root = parseJSON(_file.read())
 
 	if type(root) is not list:
 		root = root,
 
 	for atlas in root:
+		imagePath = atlas["meta"].get("image", f"{path.stem}.png")
+
 		# If the image path is not absolute, assume it is relative to the atlas
 		# file's location.
-		imagePath = atlas["meta"].get("image", f"{atlasName}.png")
-		if not os.path.isabs(imagePath):
-			imagePath = os.path.join(atlasDir, imagePath)
-
-		image   = Image.open(imagePath, "r")
-		entries = {}
+		image   = Image.open(path.parent.joinpath(imagePath), "r")
+		entries = defaultdict(dict)
 
 		for name, texture in atlas["frames"].items():
 			source = texture["frame"]
 			dest   = texture.get("spriteSourceSize", {})
-
-			# Split the frame number (4 digits) from the texture name.
-			if _match := ANIM_FRAME_REGEX.match(name):
-				name, frame = _match.groups()
-			else:
-				frame = 0
-
-			if name not in entries:
-				entries[name] = {}
+			width  = int(source.get("w", image.width))
+			height = int(source.get("h", image.height))
 
 			if texture.get("rotated", False):
 				raise RuntimeError("rotated subtextures are unsupported")
 
-			width  = int(source.get("w", image.width))
-			height = int(source.get("h", image.height))
-
-			entries[name][int(frame)] = (
+			entry = (
 				int(source.get("x", 0)),
 				int(source.get("y", 0)),
 				width,
@@ -129,17 +109,21 @@ def _parseJSONAtlas(path):
 				texture.get("trimmed", False)
 			)
 
+			# Split the frame number from the texture name.
+			if _match := ANIM_FRAME_REGEX.match(name):
+				name, frame = _match.groups()
+				entries[name][int(frame)] = entry
+			else:
+				frames = entries[name]
+				frames[len(frames)] = entry
+
 		yield image, entries
 
-# This is a custom format used exclusively in week 6 for some reason.
-# Thankfully it's trivial to parse as it's just a text file with coordinates,
-# but still... 3 different formats in a single game, wtf.
+# This is a custom format used exclusively in Friday Night Funkin' Week 6 for
+# some reason. Thankfully it's trivial to parse as it's just a text file with
+# coordinates, but still... 3 different formats in a single game, wtf.
 def _parseFNFAtlas(path):
-	atlasDir, base = os.path.split(path)
-	atlasName      = os.path.splitext(base)[0]
-
-	imagePath = os.path.join(atlasDir, f"{atlasName}.png")
-	entries   = {}
+	entries = defaultdict(dict)
 
 	with open(path, "rt") as _file:
 		atlas = parseText(_file.read(), "shell")
@@ -148,87 +132,138 @@ def _parseFNFAtlas(path):
 		name, *coords = _match.groups()
 		coords        = ( *map(int, coords), )
 
-		# Split the frame number (which for some reason is not always 4 digits
-		# here) from the texture name.
+		entry = *coords, *coords, False
+
+		# Split the frame number from the texture name.
 		if "_" in name:
-			name, frame = name.split("_")
+			name, frame = name.rsplit("_", 1)
+			entries[name][int(frame)] = entry
 		else:
-			frame = 0
+			frames = entries[name]
+			frames[len(frames)] = entry
 
-		if name not in entries:
-			entries[name] = {}
+	yield Image.open(path.parent.joinpath(f"{path.stem}.png"), "r"), entries
 
-		entries[name][int(frame)] = (
-			*coords,
-			*coords,
-			False
-		)
+## Atlas and glob path handlers
 
-	yield Image.open(imagePath, "r"), entries
-
-## Image importer frontend
-
-ATLAS_EXTENSIONS = {
+ATLAS_EXTENSIONS = CaseDict({
 	".xml":  _parseXMLAtlas,
 	".json": _parseJSONAtlas,
 	".txt":  _parseFNFAtlas,
 	".ini":  _parseFNFAtlas
-}
+})
 
-def importImage(path):
+def _sortFrames(name, frames):
+	firstFrame = min(frames.keys())
+	lastFrame  = max(frames.keys())
+
+	frame   = frames[firstFrame]
+	missing = 0
+
+	yield frame
+
+	for index in range(firstFrame + 1, lastFrame + 1):
+		# If this frame is not defined (i.e. some frame numbers are skipped),
+		# reuse the last valid frame.
+		if index in frames:
+			frame = frames[index]
+		else:
+			missing += 1
+
+		yield frame
+
+	if missing:
+		logging.debug(f"({name}) added {missing} missing frames")
+
+def _processAtlas(atlas):
+	counter = 0
+
+	for image, entries in atlas:
+		with image:
+			for name, frames in entries.items():
+				frameList = []
+
+				for frame in _sortFrames(name, frames):
+					(
+						srcX, srcY, srcW, srcH,
+						dstX, dstY, dstW, dstH, trim
+					) = frame
+
+					# Crop the frame from the source image, then place it onto
+					# a "virtual canvas" to pad it with empty borders (if there
+					# are any).
+					cropped = image.crop(
+						( srcX, srcY, srcX + srcW, srcY + srcH )
+					)
+
+					if trim and (dstX or dstY or dstW != srcW or dstH != srcH):
+						canvas = Image.new(image.mode, ( dstW, dstH ))
+						canvas.paste(cropped, ( dstX, dstY ))
+
+						frameList.append(canvas)
+					else:
+						frameList.append(cropped)
+
+				yield name, frameList
+				counter += 1
+
+	logging.debug(f"imported {counter} frame groups from atlas")
+
+def _processGlob(globPath):
+	if not (paths := sorted(globPath.parent.glob(globPath.name))):
+		raise FileNotFoundError(f"no images found matching glob expression: {globPath}")
+
+	entries = defaultdict(dict)
+
+	# Group all frames that have the same prefix followed by a frame number
+	# (e.g. character0001.png, character0002.png, etc.). Files that lack a
+	# frame number are treated as a single-frame image.
+	for path in paths:
+		image = Image.open(path, "r")
+
+		if _match := ANIM_FRAME_REGEX.match(path.stem):
+			name, frame = _match.groups()
+			entries[name][int(frame)] = image
+		else:
+			frames = entries[path.stem]
+			frames[len(frames)] = image
+
+	logging.debug(f"imported {len(entries)} frame groups using glob: {globPath}")
+
+	for name, frames in entries.items():
+		yield name, list(_sortFrames(name, frames))
+			
+## Image importer frontend
+
+def importImages(paths, options):
 	"""
-	Loads one or more images (by parsing a glob path) or an Adobe Animate atlas
-	file and yields ( name, frameList ) tuples, where each frame is a Pillow
-	image object.
+	Loads one or more images (with glob path handling) or Adobe Animate atlas
+	files, filters them by applying the given options and yields
+	( name, frameList ) tuples, where each frame is a Pillow image object.
 	"""
 
-	if (ext := os.path.splitext(path)[1].lower()) in ATLAS_EXTENSIONS:
-		atlas = ATLAS_EXTENSIONS[ext](path)
+	matchRegex = re.compile(options["match"])
+	frameRange = options["frames"]
 
-		for image, entries in atlas:
-			with image:
-				for name, frames in entries.items():
-					frameList = []
-					numFrames = max(frames.keys()) + 1
-					frame     = None
-
-					for index in range(numFrames):
-						# If this frame is not defined (i.e. the atlas skips some
-						# frame numbers), reuse the last valid frame.
-						frame = frames.get(index, frame)
-						(
-							srcX, srcY, srcW, srcH,
-							dstX, dstY, dstW, dstH, trim
-						) = frame
-
-						# Crop the frame from the source image, then place it onto
-						# a "virtual canvas" to pad it with empty borders (if there
-						# are any).
-						cropped = image.crop(
-							( srcX, srcY, srcX + srcW, srcY + srcH )
-						)
-
-						if trim and (dstX or dstY or dstW != srcW or dstH != srcH):
-							canvas = Image.new(image.mode, ( dstW, dstH ))
-							canvas.paste(cropped, ( dstX, dstY ))
-
-							frameList.append(canvas)
-						else:
-							frameList.append(cropped)
-
-					yield name, frameList
-	else:
+	for path in map(Path, paths):
 		# If the image is not an atlas, try interpreting the path as a glob
-		# expression to find multiple frames.
-		if not (paths := sorted(globPaths(path))):
-			raise FileNotFoundError(f"no images found matching path: {path}")
+		# expression to find frames.
+		if path.suffix in ATLAS_EXTENSIONS:
+			images = _processAtlas(ATLAS_EXTENSIONS[path.suffix](path))
+		else:
+			images = _processGlob(path)
 
-		# Name the animation after the first file found, stripping out the
-		# frame number if present at the end of the file name.
-		#base = os.path.split(paths[0])[1]
-		#name = os.path.splitext(base)[0]
-		#if _match := ANIM_FRAME_REGEX.match(name):
-			#name = _match.group(1)
+	for name, frameList in images:
+		if not matchRegex.match(name):
+			continue
 
-		#yield name, [ Image.open(_path, "r") for _path in paths ]
-		yield None, [ Image.open(_path, "r") for _path in paths ]
+		frames = tuple(map(
+			frameList.__getitem__,
+			parseRange(frameRange, 0, len(frameList) - 1)
+		))
+
+		if not frames:
+			logging.warning(f"skipping all frames of texture {name}")
+			continue
+
+		yield name, frames

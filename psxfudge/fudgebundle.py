@@ -3,37 +3,39 @@
 # (C) 2022 spicyjpeg
 
 import os, re, logging, json
-from struct   import Struct
-from argparse import FileType
+from struct      import Struct
+from collections import ChainMap
+from pathlib     import Path
+from argparse    import FileType
 
 import numpy, av
-from PIL       import Image
-from ._file    import BundleBuilder
-from ._image   import convertImage
-from ._parsers import importKeyValue, importImage
-from ._avenc   import convertSound
-from ._util    import unpackNibbles2D, globPaths, parseJSON, ArgParser
+from PIL        import Image
+from ._builders import BundleBuilder
+from ._image    import convertImage
+from ._parsers  import importKeyValue, importImages
+from ._avenc    import convertSound
+from ._util     import unpackNibbles2D, normalizePaths, parseJSON, CaseDict, ArgParser
 
-DEFAULT_OPTIONS = {
+DEFAULT_PROPERTIES = {
 	# Image options
 	"match":       ".*",
-	"skipframes":  0,
+	"frames":      "0-255",
 	"crop":        ( 0, 0, 1e10, 1e10 ),
 	"scale":       1.0,
 	"bpp":         4,
 	"palette":     "auto",
 	"dither":      0.5,
-	"scalemode":   "lanczos",
-	"alpharange":  ( 0x20, 0xe0 ),
-	"blackvalue":  ( 1, 1, 1, 0 ),
-	"cropmode":    "preserveMargin",
+	"scaleMode":   "lanczos",
+	"alphaRange":  ( 0x20, 0xe0 ),
+	"blackValue":  ( 1, 1, 1, 0 ),
+	"cropMode":    "preserveMargin",
 	"padding":     0,
-	"flipmode":    "preferUnflipped",
+	"flipMode":    "preferUnflipped",
 	# Sound options
-	"chunklength": 0x6800,
-	"samplerate":  0,
+	"chunkLength": 0x6800,
+	"sampleRate":  0,
 	"channels":    1,
-	"loopoffset":  -1.0,
+	"loopOffset":  -1.0,
 	# String table options
 	"encoding":    "ascii",
 	"align":       4
@@ -64,7 +66,7 @@ def _createParser():
 	)
 	group.add_argument(
 		"-A", "--atlas-debug",
-		type    = str,
+		type    = Path,
 		help    = "Save PNGs of generated texture pages to the specified directory for debugging/inspection",
 		metavar = "path"
 	)
@@ -88,8 +90,9 @@ def _createParser():
 	group = parser.add_argument_group("File paths")
 	group.add_argument(
 		"configFile",
-		type = FileType("rt"),
-		help = "Path to JSON file containing a list of entries"
+		type  = FileType("rt"),
+		nargs = "+",
+		help  = "Paths to JSON files containing a list of entry objects"
 	)
 	group.add_argument(
 		"outputFile",
@@ -103,75 +106,57 @@ def main():
 	parser = _createParser()
 	args   = parser.parse_args()
 
-	with args.configFile as _file:
-		#entryList = json.load(_file)
-		entryList = parseJSON(_file.read())
+	entryList = []
 
-	if type(entryList) is not list:
-		parser.error("the root element of the JSON file is not a list")
+	for _file in args.configFile:
+		with _file:
+			_list = parseJSON(_file.read())
+		if type(_list) is not list:
+			parser.error(f"the root element of {_file.name} is not a list")
+
+		entryList.extend(_list)
 
 	bundle  = BundleBuilder()
-	options = DEFAULT_OPTIONS.copy()
+	options = CaseDict(DEFAULT_PROPERTIES)
+	forced  = CaseDict()
 
 	for arg in (args.set or []):
 		key, value = arg.split("=", 1)
-		options[key.strip().lower()] = json.loads(value)
+		options[key] = json.loads(value)
+	for arg in (args.force_set or []):
+		key, value = arg.split("=", 1)
+		forced[key] = json.loads(value)
 
 	for _entry in entryList:
 		# Inherit all default options and normalize the keys to lowercase.
-		entry = options.copy()
-
-		for key, value in _entry.items():
-			entry[key.strip().lower()] = value
-
-		for arg in (args.force_set or []):
-			key, value = arg.split("=", 1)
-			entry[key.strip().lower()] = json.loads(value)
+		entry = ChainMap(forced, CaseDict(_entry), options)
 
 		name  = entry["name"].strip()
-		_from = os.path.normpath(entry["from"].strip())
+		_from = tuple(normalizePaths(entry["from"]))
 		_type = entry["type"].strip().lower()
 
 		# Add the asset to the bundle, preprocessing it if it's a background,
 		# texture or sound or importing it as-is in other cases.
 		match _type:
 			case "texture" | "itexture":
-				matchRegex = re.compile(entry["match"])
-				skipFrames = int(entry["skipframes"]) + 1
-
 				# Assume that the source file is a spritesheet containing
-				# multiple animated textures (importImage() also treats single
+				# multiple animated textures (importImages() also treats single
 				# images as spritesheets) and add each texture to the bundle
-				# separately, skipping the ones that do not match the provided
-				# regex.
-				for textureName, frameList in importImage(_from):
-					if textureName and not matchRegex.match(textureName):
-						continue
-
-					images  = []
-					counter = -1
-
-					for frame in frameList:
-						# The counter is used to skip frames at regular intervals.
-						if counter := ((counter + 1) % skipFrames):
-							continue
-
-						images.append(convertImage(frame, entry))
-
-					if not images:
-						logging.warning(f"({name}) can't import any frames for {textureName}")
-						continue
-
+				# separately.
+				for _name, frameList in importImages(_from, entry):
 					bundle.addTexture(
-						name.format(sprite = textureName),
-						images,
+						name.format(sprite = _name),
+						[ convertImage(frame, entry) for frame in frameList ],
 						_type
 					)
 
 			case "bg" | "ibg":
 				entry["bpp"] = 16
 
-				with Image.open(_from, "r") as _file:
+				if len(_from) > 1:
+					logging.warning(f"({name}) more than one path specified, using only first path")
+
+				with Image.open(_from[0], "r") as _file:
 					bundle.addBG(
 						name,
 						convertImage(_file, entry),
@@ -181,7 +166,10 @@ def main():
 					)
 
 			case "sound":
-				with av.open(_from, "r") as _file:
+				if len(_from) > 1:
+					logging.warning(f"({name}) more than one path specified, using only first path")
+
+				with av.open(_from[0], "r") as _file:
 					bundle.addSound(name, *convertSound(_file, entry))
 
 			case "stringtable":
@@ -210,7 +198,7 @@ def main():
 		# loop has to be executed even if the pages aren't going to be saved,
 		# due to buildVRAM() being a generator function.
 		if args.atlas_debug:
-			prefix = os.path.join(args.atlas_debug, f"{index:02d}")
+			prefix = args.atlas_debug.joinpath(f"{index:02d}")
 			page4  = unpackNibbles2D(page) << 4
 
 			#Image.fromarray(page,  "L").save(f"{prefix}_8.png")

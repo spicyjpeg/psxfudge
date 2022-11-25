@@ -5,7 +5,7 @@ import os, math, logging
 
 import numpy
 from PIL      import Image
-from ._util   import blitArray
+from ._util   import blitArray, CaseDict
 from ._native import quantizeImage, toPS1ColorSpace, toPS1ColorSpace2D
 
 ## Image wrapper class (used by texture packer)
@@ -134,13 +134,13 @@ class ImageWrapper:
 		# has no native support for 4-bit arrays, so a full byte is used for
 		# each pixel even for <=16 colors). This is done by splitting the array
 		# into vertically interlaced odd/even columns (after padding to ensure
-		# the width is a multiple of 2) and binary OR-ing them after relocating
+		# the width is a multiple of 4) and binary OR-ing them after relocating
 		# the odd columns' values to the upper nibble.
 		if self.bpp == 4:
-			if data.shape[1] % 2:
+			if (align := data.shape[1] % 4):
 				data = numpy.c_[
 					data,
-					numpy.zeros(data.shape[0], numpy.uint8)
+					numpy.zeros(( data.shape[0], 4 - align ), numpy.uint8)
 				]
 
 			data = data[:, 0::2] | (data[:, 1::2] << 4)
@@ -175,27 +175,27 @@ def _getMonoPalette(numSolid, numAlpha):
 		numpy.zeros(( 1, 4 ), numpy.uint8)
 	]
 
-PALETTES = {
+PALETTES = CaseDict({
 	"auto":        None,
 	"mono4":       _getMonoPalette( 15,   0), # 16 solid shades of gray
-	"monoalpha4":  _getMonoPalette(  8,   7), # 8 solid shades + 7 semi-transparent shades
+	"monoAlpha4":  _getMonoPalette(  8,   7), # 8 solid shades + 7 semi-transparent shades
 	"mono8":       _getMonoPalette(255,   0), # 256 solid shades of gray
-	"monoalpha8":  _getMonoPalette(128, 127)  # 128 solid shades + 127 semi-transparent shades
-}
-SCALE_MODES = {
+	"monoAlpha8":  _getMonoPalette(128, 127)  # 128 solid shades + 127 semi-transparent shades
+})
+SCALE_MODES = CaseDict({
 	"nearest":  Image.NEAREST,
 	"lanczos":  Image.LANCZOS,
 	"bilinear": Image.BILINEAR,
 	"bicubic":  Image.BICUBIC,
 	"box":      Image.BOX,
 	"hamming":  Image.HAMMING
-}
-FLIP_MODES = {
+})
+FLIP_MODES = CaseDict({
 	"none":            ( False, ),
 	"flip":            ( True, ),
-	"preferunflipped": ( False, True ),
-	"preferflipped":   ( True, False )
-}
+	"preferUnflipped": ( False, True ),
+	"preferFlipped":   ( True, False )
+})
 
 def convertImage(image, options):
 	"""
@@ -203,18 +203,18 @@ def convertImage(image, options):
 	options. Returns an ImageWrapper object.
 	"""
 
-	name       = options.get("name", "image")
+	name       = options.get("name", "<unknown>")
 	crop       = map(int, options["crop"])
 	scale      = float(options["scale"])
 	bpp        = int(options["bpp"])
-	palette    = PALETTES[options["palette"].lower()]
+	palette    = PALETTES[options["palette"]]
 	dither     = float(options["dither"])
-	scaleMode  = SCALE_MODES[options["scalemode"].lower()]
-	alphaRange = sorted(map(int, options["alpharange"]))
-	blackValue = tuple(map(int, options["blackvalue"]))
-	cropMode   = options["cropmode"].lower()
+	scaleMode  = SCALE_MODES[options["scaleMode"]]
+	alphaRange = sorted(map(int, options["alphaRange"]))
+	blackValue = tuple(map(int, options["blackValue"]))
+	cropMode   = options["cropMode"].strip().lower()
 	padding    = int(options["padding"])
-	flipModes  = FLIP_MODES[options["flipmode"].lower()]
+	flipModes  = FLIP_MODES[options["flipMode"]]
 
 	# Crop the image if necessary. Note that cropping is done before rescaling.
 	x, y, width, height = crop

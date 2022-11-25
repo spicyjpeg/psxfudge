@@ -5,7 +5,9 @@ desktop.ini
 
 # Do not include any built or cached files.
 build/
+dist/
 eggs/
+*.spec
 *.egg
 *.egg-info/
 __pycache__/
