@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 # (C) 2022 spicyjpeg
 
-import os, re, logging, json
+import re, logging, json
 from struct      import Struct
 from collections import ChainMap
 from pathlib     import Path
@@ -13,8 +13,9 @@ from PIL        import Image
 from ._builders import BundleBuilder
 from ._image    import convertImage
 from ._parsers  import importKeyValue, importImages
-from ._avenc    import convertSound
-from ._util     import unpackNibbles2D, normalizePaths, parseJSON, CaseDict, ArgParser
+from ._audio    import convertSound
+from ._util     import unpackNibbles2D, iteratePaths, parseJSON, CaseDict, \
+	ArgParser
 
 DEFAULT_PROPERTIES = {
 	# Image options
@@ -32,7 +33,7 @@ DEFAULT_PROPERTIES = {
 	"padding":     0,
 	"flipMode":    "preferUnflipped",
 	# Sound options
-	"chunkLength": 0x6800,
+	"interleave":  0x6800,
 	"sampleRate":  0,
 	"channels":    1,
 	"loopOffset":  -1.0,
@@ -104,7 +105,7 @@ def _createParser():
 
 def main():
 	parser = _createParser()
-	args   = parser.parse_args()
+	args   = parser.parse()
 
 	entryList = []
 
@@ -132,7 +133,7 @@ def main():
 		entry = ChainMap(forced, CaseDict(_entry), options)
 
 		name  = entry["name"].strip()
-		_from = tuple(normalizePaths(entry["from"]))
+		_from = tuple(iteratePaths(entry["from"]))
 		_type = entry["type"].strip().lower()
 
 		# Add the asset to the bundle, preprocessing it if it's a background,
@@ -147,7 +148,7 @@ def main():
 					bundle.addTexture(
 						name.format(sprite = _name),
 						[ convertImage(frame, entry) for frame in frameList ],
-						_type
+						_type == "itexture"
 					)
 
 			case "bg" | "ibg":
@@ -162,15 +163,15 @@ def main():
 						convertImage(_file, entry),
 						int(entry["crop"][0]),
 						int(entry["crop"][1]),
-						_type
+						_type == "ibg"
 					)
 
 			case "sound":
 				if len(_from) > 1:
 					logging.warning(f"({name}) more than one path specified, using only first path")
 
-				with av.open(_from[0], "r") as _file:
-					bundle.addSound(name, *convertSound(_file, entry))
+				with av.open(str(_from[0]), "r") as _file:
+					bundle.addSound(name, convertSound(_file, entry))
 
 			case "stringtable":
 				bundle.addStringTable(
@@ -184,7 +185,7 @@ def main():
 				with open(entry["from"], "rb") as _file:
 					bundle.addEntry(name, _file.read(), _type)
 
-	logging.info(f"processed {len(bundle.entries)} entries")
+	logging.info(f"added {len(bundle.entries)} entries")
 
 	pages = bundle.buildVRAM(
 		args.discard_step,

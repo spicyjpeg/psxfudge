@@ -10,8 +10,8 @@ See the project's README for more information.
 """
 
 __all__ = (
-	"_avenc",
-	"_file",
+	"_audio",
+	"_builders",
 	"_image",
 	"_native",
 	"_packer",

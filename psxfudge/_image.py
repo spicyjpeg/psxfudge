@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 # (C) 2022 spicyjpeg
 
-import os, math, logging
+import math, logging
+from struct import Struct
 
 import numpy
 from PIL      import Image
@@ -15,9 +16,14 @@ from ._native import quantizeImage, toPS1ColorSpace, toPS1ColorSpace2D
 TEXPAGE_WIDTH  =  64
 TEXPAGE_HEIGHT = 256
 
+TIM_HEADER_STRUCT  = Struct("< 2I")
+TIM_HEADER_VERSION = 0x10
+TIM_SECTION_STRUCT = Struct("< I 4H")
+
 class ImageWrapper:
 	"""
-	Wrapper class for converted images and palettes, holding placement data.
+	Wrapper class for converted images and palettes, holding metadata such as
+	placement information alongside image data.
 	"""
 
 	def __init__(
@@ -28,6 +34,11 @@ class ImageWrapper:
 		padding   = 0,
 		flipModes = ( False, )
 	):
+		if data.ndim != 2:
+			raise ValueError("image data must be 2-dimensional")
+		if palette is not None and palette.ndim != 1:
+			raise ValueError("palette data must be 1-dimensional")
+
 		self.data      = data
 		self.palette   = palette
 		self.margin    = margin
@@ -137,7 +148,7 @@ class ImageWrapper:
 		# the width is a multiple of 4) and binary OR-ing them after relocating
 		# the odd columns' values to the upper nibble.
 		if self.bpp == 4:
-			if (align := data.shape[1] % 4):
+			if (align := (data.shape[1] % 4)):
 				data = numpy.c_[
 					data,
 					numpy.zeros(( data.shape[0], 4 - align ), numpy.uint8)
@@ -155,6 +166,40 @@ class ImageWrapper:
 		width = 2 ** (self.bpp + 1)
 		data  = self.palette.view(numpy.uint8).reshape(( 1, width ))
 		blitArray(data, dest, ( self.py, self.px * 32 ))
+
+	def toTIM(self):
+		tim = bytearray(TIM_HEADER_STRUCT.pack(
+			TIM_HEADER_VERSION,
+			# Bit 3 signals the presence of a palette section in the file
+			{ 4: 0x08, 8: 0x09, 16: 0x02 }[self.bpp]
+		))
+
+		# Generate the palette section if any.
+		if self.bpp != 16:
+			if int(self.px) % 16:
+				logging.warning("palette X offset is not aligned to 16 pixels")
+
+			paletteData = self.palette.view(numpy.uint16)
+			tim.extend(TIM_SECTION_STRUCT.pack(
+				TIM_SECTION_STRUCT.size + paletteData.size * 2,
+				self.px,
+				self.py,
+				paletteData.size,
+				1
+			))
+			tim.extend(paletteData)
+
+		# Generate the image section.
+		imageData = self.getPackedData()
+		tim.extend(TIM_SECTION_STRUCT.pack(
+			TIM_SECTION_STRUCT.size + imageData.size,
+			int(self.x),
+			int(self.y),
+			*self.getPackedSize()
+		))
+		tim.extend(imageData)
+
+		return tim
 
 ## Image downscaler and quantizer
 

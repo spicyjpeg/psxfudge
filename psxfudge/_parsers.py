@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
 # (C) 2022 spicyjpeg
 
-import os, re, json, logging
+import re, json, logging
 from collections import defaultdict
-from pathlib     import Path
 from xml.etree   import ElementTree
 
 from PIL    import Image
@@ -21,7 +20,7 @@ KEY_VALUE_EXTENSIONS = CaseDict({
 def importKeyValue(paths, constructor = dict):
 	obj = constructor()
 
-	for path in map(Path, paths):
+	for path in paths:
 		if path.suffix not in KEY_VALUE_EXTENSIONS:
 			raise RuntimeError(f"unsupported extension for key-value files: {path.suffix}")
 
@@ -245,7 +244,7 @@ def importImages(paths, options):
 	matchRegex = re.compile(options["match"])
 	frameRange = options["frames"]
 
-	for path in map(Path, paths):
+	for path in paths:
 		# If the image is not an atlas, try interpreting the path as a glob
 		# expression to find frames.
 		if path.suffix in ATLAS_EXTENSIONS:

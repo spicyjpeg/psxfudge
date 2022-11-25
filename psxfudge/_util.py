@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 # (C) 2022 spicyjpeg
 
-import os, sys, re, math, logging, json
+import re, math, logging, json
 from time        import gmtime
-from itertools   import chain
+from pathlib     import Path
 from collections import UserDict
 from ast         import literal_eval
 from struct      import Struct
@@ -93,6 +93,15 @@ def hash32(obj):
 		) & 0xffffffff
 
 	return value
+
+def swapEndianness(value, bits = 32):
+	_value, output = value, 0
+
+	for _ in range(0, bits, 8):
+		output   = (output << 8) | (_value & 0xff)
+		_value >>= 8
+
+	return output
 
 ## Format conversion
 
@@ -224,12 +233,12 @@ def bestHashTableLength(hashes, minLoadFactor = 0.7, chainPenalty = 0.5):
 
 ## Path utilities
 
-def normalizePaths(paths):
-	if type(paths) is str:
-		yield os.path.normpath(paths.strip())
+def iteratePaths(paths):
+	if type(paths) is str or isinstance(paths, Path):
+		yield Path(paths)
 	else:
 		for path in paths:
-			yield os.path.normpath(path.strip())
+			yield Path(path)
 
 ## Text file parsing
 
@@ -408,43 +417,34 @@ class CacheDirectory:
 
 	def __init__(self, path = None, prefixBits = 4):
 		if path:
-			if not os.path.isdir(path):
-				os.mkdir(path)
-
-			self.path = path
+			self.path = Path(path)
+			self.path.mkdir(parents = True, exist_ok = True)
 		else:
-			self.path = mkdtemp("", CACHE_DIR_PREFIX)
+			self.path = Path(mkdtemp("", CACHE_DIR_PREFIX))
 
 		self.prefixBits = prefixBits
 
 	def prepare(self):
 		for prefix in range(2 ** self.prefixBits):
-			path = os.path.join(self.path, f"{prefix:02x}")
-
-			if not os.path.isdir(path):
-				os.mkdir(path)
+			path = self.path.joinpath(f"{prefix:02x}")
+			path.mkdir(parents = True, exist_ok = True)
 
 	def getPath(self, name):
 		_hash  = hash32(name)
 		prefix = _hash >> (32 - self.prefixBits)
-		path   = os.path.join(self.path, f"{prefix:02x}")
+		path   = self.path.joinpath(f"{prefix:02x}")
 
-		if not os.path.isdir(path):
-			os.mkdir(path)
-
-		return os.path.join(path, f"{_hash:08x}.bin")
+		path.mkdir(parents = True, exist_ok = True)
+		return path.joinpath(f"{_hash:08x}.bin")
 
 	def lastModified(self, name):
 		path = self.getPath(name)
-		if not os.path.isfile(path):
+		if not path.is_file():
 			return 0
 
-		return os.stat(path).st_mtime
-
-	def open(self, name, *args, **namedArgs):
-		return open(self.getPath(name), *args, **namedArgs)
+		return path.stat().st_mtime
 
 	def delete(self, name):
 		path = self.getPath(name)
-		if os.path.isfile(path):
-			os.remove(path)
+		if path.is_file():
+			path.unlink()

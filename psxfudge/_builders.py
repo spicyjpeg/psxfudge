@@ -1,75 +1,14 @@
 # -*- coding: utf-8 -*-
 # (C) 2022 spicyjpeg
 
-import os, math, logging
+import math, logging
 from struct    import Struct
+from enum      import IntEnum
 from itertools import chain
-from shutil    import copyfileobj
-from tempfile  import SpooledTemporaryFile
 
-import numpy
 from ._packer import buildTexpages
-from ._util   import alignToMultiple, alignMutableToMultiple, hash32, bestHashTableLength, CaseDict
-
-## Standard PS1 formats (.TIM, .VAG)
-
-TIM_HEADER_STRUCT  = Struct("< 2I")
-TIM_HEADER_VERSION = 0x10
-TIM_SECTION_STRUCT = Struct("< I 4H")
-
-VAG_HEADER_STRUCT  = Struct("> 4s I 4s 2I 12x 16s")
-VAG_HEADER_MAGIC   = b"VAGp"
-VAGI_HEADER_MAGIC  = b"VAGi"
-VAG_HEADER_VERSION = 0x20
-
-GPU_DMA_BUFFER_SIZE = 128
-SPU_DMA_BUFFER_SIZE =  64
-
-def generateTIM(image):
-	"""
-	Converts an ImageWrapper object to a .TIM image file and returns a byte
-	array.
-	"""
-
-	data = bytearray(TIM_HEADER_STRUCT.pack(
-		TIM_HEADER_VERSION,
-		# Bit 3 signals the presence of a palette section in the file
-		{ 4: 0x08, 8: 0x09, 16: 0x02 }[image.bpp]
-	))
-
-	# Generate the palette section.
-	if image.bpp != 16:
-		paletteData = image.palette.view(numpy.uint16)
-
-		if int(image.px) % 16:
-			logging.warning("palette X offset is not aligned to 16 pixels")
-
-		data.extend(TIM_SECTION_STRUCT.pack(
-			TIM_SECTION_STRUCT.size + paletteData.size * 2,
-			image.px,
-			image.py,
-			paletteData.size,
-			1
-		))
-		data.extend(paletteData.tobytes())
-
-	# Generate the image section.
-	imageData = image.getPackedData()
-
-	#if imageData.size % GPU_DMA_BUFFER_SIZE:
-		#logging.warning("packed image size is not a multiple of DMA buffer size")
-
-	data.extend(TIM_SECTION_STRUCT.pack(
-		TIM_SECTION_STRUCT.size + imageData.size,
-		int(image.x),
-		int(image.y),
-		*image.getPackedSize()
-	))
-	data.extend(imageData.tobytes())
-
-	return data
-
-# TODO: move .VAG generator here
+from ._util   import alignToMultiple, alignMutableToMultiple, hash32, \
+	bestHashTableLength
 
 ## Index file generator
 
@@ -154,7 +93,7 @@ class IndexBuilder:
 				_entry     = entry.copy()
 				_entry[1] += globalOffset
 			else:
-				_entry = 0, 0, 0, 0, 0xffff
+				_entry = 0, 0, 0, 0xffff, 0xffff
 
 			if extended:
 				data.extend(INDEX_EXT_ENTRY_STRUCT.pack(*_entry))
@@ -169,28 +108,26 @@ class IndexBuilder:
 
 ## Bundle file generator
 
-BUNDLE_HEADER_MAGIC   = b"[psxfudge bundle format]v1.0"
-BUNDLE_HEADER_STRUCT  = Struct("< 28s 4I")
+BUNDLE_HEADER_STRUCT  = Struct("< 11s B 4I")
+BUNDLE_HEADER_MAGIC   = b"fudgebundle"
+BUNDLE_HEADER_VERSION = 0x01
 BG_HEADER_STRUCT      = Struct("< 4H")
 TEXTURE_HEADER_STRUCT = Struct("< 4B")
 TEXTURE_FRAME_STRUCT  = Struct("< 6B H")
 SOUND_HEADER_STRUCT   = Struct("< 4H")
 
-ENTRY_TYPES = CaseDict({
-	"file":        0xf11e,
-	"bundle":      0xda7a, # Currently unused
-	"dll":         0xc0de,
-	"texture":     0x0001, # Progressive animated texture
-	"itexture":    0x8001, # Interlaced animated texture
-	"bg":          0x0002, # Progressive background (in main RAM)
-	"ibg":         0x8002, # Interlaced background (in main RAM)
-	"sound":       0x0003,
-	"stringtable": 0x0004
-})
+class EntryType(IntEnum):
+	FILE         = 0x0000
+	TEXTURE      = 0x0001 # Progressive animated texture
+	ITEXTURE     = 0x8001 # Interlaced animated texture
+	BG           = 0x0002 # Progressive background (in main RAM)
+	IBG          = 0x8002 # Interlaced background (in main RAM)
+	SOUND        = 0x0003
+	STRING_TABLE = 0x0004
 
 DATA_SIZE      = 0x180000    # Approximately 1.5 MB for main data section
 VRAM_DATA_SIZE = 0x8000 * 20 # 20 texpages
-SPU_DATA_SIZE  = 0x7a000
+SPU_DATA_SIZE  = 0x7d000
 SECTOR_SIZE    = 0x800
 
 class BundleBuilder(IndexBuilder):
@@ -210,21 +147,16 @@ class BundleBuilder(IndexBuilder):
 		self.spuData  = bytearray()
 		self.data     = bytearray()
 
-	def addEntry(self, name, data, _type):
+	def addEntry(self, name, data, entryType = 0):
 		if (len(self.data) + len(data)) > DATA_SIZE:
 			raise RuntimeError("main RAM size limit exceeded")
 
-		super().addEntry(
-			name,
-			len(self.data),
-			len(data),
-			ENTRY_TYPES.get(_type, 0xffff)
-		)
-
+		super().addEntry(name, len(self.data), len(data), entryType)
 		self.data.extend(alignToMultiple(data, 4))
-		logging.debug(f"({name}) placed @ {len(self.data):08x}")
 
-	def addTexture(self, name, images, _type = "texture"):
+		logging.debug(f"({name}) type=0x{entryType:x}, offset=0x{len(self.data):x}")
+
+	def addTexture(self, name, images, interlaced = False):
 		if images[0].width > 255 or images[0].height > 255:
 			raise RuntimeError("textures must be 255x255 or smaller")
 
@@ -240,7 +172,7 @@ class BundleBuilder(IndexBuilder):
 		# we have to generate blank frame entries which will be filled in later
 		# by _buildVRAM().
 		for image in images:
-			if _type == "itexture":
+			if interlaced:
 				fields = image.toInterlaced(0), image.toInterlaced(1)
 			else:
 				fields = image,
@@ -250,42 +182,53 @@ class BundleBuilder(IndexBuilder):
 
 			header.extend(b"\x00" * TEXTURE_FRAME_STRUCT.size * len(fields))
 
-		self.addEntry(name, header, _type)
+		self.addEntry(
+			name,
+			header,
+			EntryType.ITEXTURE if interlaced else EntryType.TEXTURE
+		)
 
-	def addBG(self, name, image, x, y, _type = "bg"):
+	def addBG(self, name, image, x, y, interlaced = False):
 		data = bytearray(BG_HEADER_STRUCT.pack(
 			x, y, image.width, image.height
 		))
 
-		if _type == "ibg":
-			data.extend(image.toInterlaced(0).data.tobytes())
-			data.extend(image.toInterlaced(1).data.tobytes())
+		if interlaced:
+			data.extend(image.toInterlaced(0).data)
+			data.extend(image.toInterlaced(1).data)
 		else:
-			data.extend(image.data.tobytes())
+			data.extend(image.data)
 
-		self.addEntry(name, data, _type)
+		self.addEntry(
+			name,
+			data,
+			EntryType.IBG if interlaced else EntryType.BG
+		)
 
-	def addSound(self, name, data, rightOffset, sampleRate):
-		if rightOffset:
-			_rightOffset = len(self.spuData) + rightOffset
-		else:
-			_rightOffset = 0
+	def addSound(self, name, sound):
+		if sound.data.shape[0] > 2:
+			raise RuntimeError("sounds must be mono or stereo")
 
-		if (len(self.spuData) + len(data)) > SPU_DATA_SIZE or \
-			(_rightOffset + len(data)) > SPU_DATA_SIZE:
+		length      = sound.data.shape[1]
+		leftOffset  = len(self.spuData)
+		rightOffset = (leftOffset + length) if sound.data.shape[0] == 2 else 0
+
+		if \
+			(leftOffset + length) > SPU_DATA_SIZE or \
+			(rightOffset + length) > SPU_DATA_SIZE:
 			raise RuntimeError("SPU RAM size limit exceeded")
 
 		header = SOUND_HEADER_STRUCT.pack(
-			len(self.spuData) // 8,      # .leftOffset
-			_rightOffset // 8,           # .rightOffset
-			len(data) // 8,              # .length
-			sampleRate * 0x1000 // 44100 # .sampleRate
+			leftOffset  // 8,         # .leftOffset
+			rightOffset // 8,         # .rightOffset
+			length      // 8,         # .length
+			sound.getSPUSampleRate()  # .sampleRate
 		)
 
 		# Only the header is placed in the main data section. The actual ADPCM
 		# data itself is appended to the SPU RAM section.
-		self.addEntry(name, header, "sound")
-		self.spuData.extend(data)
+		self.addEntry(name, header, EntryType.SOUND)
+		self.spuData.extend(sound.data)
 
 	def addStringTable(self, name, entries, encoding, align):
 		table   = IndexBuilder()
@@ -315,7 +258,7 @@ class BundleBuilder(IndexBuilder):
 		data   = table.serialize(False, length)
 		data.extend(blob)
 
-		self.addEntry(name, data, "stringtable")
+		self.addEntry(name, data, EntryType.STRING_TABLE)
 
 	def buildVRAM(self, *options, **kwOptions):
 		for page in buildTexpages(self.allTextures, *options, **kwOptions):
@@ -323,7 +266,7 @@ class BundleBuilder(IndexBuilder):
 			# append it to the VRAM section.
 			for offset in range(0, page.shape[1], 128):
 				section = page[:, offset:(offset + 128)]
-				self.vramData.extend(section.tobytes())
+				self.vramData.extend(section)
 
 			yield page
 
@@ -348,9 +291,10 @@ class BundleBuilder(IndexBuilder):
 		lengths      = len(self.vramData), len(self.spuData), len(self.data)
 
 		self.header = bytearray(BUNDLE_HEADER_STRUCT.pack(
-			BUNDLE_HEADER_MAGIC,
-			headerLength,
-			*lengths,
+			BUNDLE_HEADER_MAGIC,   # .magic
+			BUNDLE_HEADER_VERSION, # .version
+			headerLength,          # .headerLength
+			*lengths,              # .sectionLengths
 		))
 		self.header.extend(super().serialize(True))
 

@@ -5,10 +5,9 @@
 import logging
 from pathlib import Path
 
-from ._parsers  import importImages
-from ._image    import convertImage
-from ._builders import generateTIM
-from ._util     import normalizePaths, ArgParser
+from ._parsers import importImages
+from ._image   import convertImage
+from ._util    import iteratePaths, ArgParser
 
 DEFAULT_PROPERTIES = {
 	"match":       ".*",
@@ -57,7 +56,7 @@ def main():
 	px, py = args.properties["palettePos"]
 
 	images = tuple(importImages(
-		normalizePaths(args.inputFile),
+		iteratePaths(args.inputFile),
 		args.properties
 	))
 
@@ -84,7 +83,7 @@ def main():
 			image.px, image.py = int(px), int(py)
 
 			with path.open("wb") as _file:
-				_file.write(generateTIM(image))
+				_file.write(image.toTIM())
 
 			logging.info(f"saved {path.name}")
 

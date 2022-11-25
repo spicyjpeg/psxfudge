@@ -416,69 +416,41 @@ cdef cppclass SPUBlock:
 	uint8_t data[14]
 
 cdef class SPUBlockEncoder:
-	# FIXME: "ADPCMEncoder encoders[2]" would be much cleaner, but I couldn't
-	# get it to work without instantly crashing. Cython bug perhaps?
-	cdef ADPCMEncoder leftEncoder, rightEncoder
+	cdef ADPCMEncoder adpcmEncoder
+	cdef public int   loopOffset
 
-	cdef public int loopOffset, chunkStride
+	def __cinit__(self, int loopOffset = -1):
+		self.adpcmEncoder.bitsPerSample = 4
+		self.adpcmEncoder.numFilters    = 5
 
-	def __cinit__(self, int loopOffset = -1, int chunkStride = 0):
-		self.leftEncoder.bitsPerSample  = 4
-		self.leftEncoder.numFilters     = 5
-		self.rightEncoder.bitsPerSample = 4
-		self.rightEncoder.numFilters    = 5
-
-		self.loopOffset  = loopOffset
-		self.chunkStride = chunkStride
+		self.loopOffset = loopOffset
 
 	def encode(
 		self,
-		const int16_t[:, ::1] samples,
-		uint8_t[::1]          output,
-		int                   endLoopFlags = 0
+		const int16_t[::1] samples,
+		uint8_t[::1]       output,
+		int                endLoopFlags = 0
 	):
-		if samples.shape[0] > 2:
-			raise ValueError("the number of channels must be 1 or 2")
-		if samples.shape[1] % 28:
+		if samples.shape[0] % 28:
 			raise ValueError("the number of samples must be a multiple of 28")
 
-		cdef int numBlocks = samples.shape[1] // 28
+		cdef int numBlocks = samples.shape[0] // 28
 
 		cdef SPUBlock *block
-		cdef int      index, offset, channel, flags
+		cdef int      index, offset, channel
 
 		for index in range(numBlocks):
-			# Compute loop flags for this set of blocks.
-			if index == (numBlocks - 1):
-				flags = endLoopFlags
-			else:
-				flags = 0
+			block = <SPUBlock *> &output[index * 16]
 
+			block.flags = 0
+			if index == (numBlocks - 1):
+				block.flags |= endLoopFlags
 			if (self.loopOffset >= 0) and (self.loopOffset < 28):
-				flags |= LoopFlags.SET_LOOP_POINT
-			#if (self.loopEnd >= 0) and (self.loopEnd < 28):
-				#if self.loopOffset < self.loopEnd:
-					#flags |= LoopFlags.LOOP | LoopFlags.SUSTAIN
-				#else:
-					#flags |= LoopFlags.LOOP
+				block.flags |= LoopFlags.SET_LOOP_POINT
 
 			self.loopOffset = max(self.loopOffset - 28, -1)
 
-			# Process the block for both channels.
-			offset = index * 28
-			block  = <SPUBlock *> &output[index * 16]
-
-			block.flags  = flags
-			block.header = self.leftEncoder.encode(
-				samples[0, offset:(offset + 28)],
+			block.header = self.adpcmEncoder.encode(
+				samples[index * 28:(index + 1) * 28],
 				block.data
 			)
-
-			if samples.shape[0] == 2:
-				block = <SPUBlock *> &output[index * 16 + self.chunkStride]
-
-				block.flags  = flags
-				block.header = self.rightEncoder.encode(
-					samples[1, offset:(offset + 28)],
-					block.data
-				)
