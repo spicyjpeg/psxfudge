@@ -6,8 +6,8 @@ from struct    import Struct
 from enum      import IntEnum
 from itertools import chain
 
-from ._packer import buildTexpages
-from ._util   import alignToMultiple, alignMutableToMultiple, hash32, \
+from .packer import buildTexpages
+from .util   import alignToMultiple, alignMutableToMultiple, hash32, \
 	bestHashTableLength
 
 ## Index file generator
@@ -302,10 +302,10 @@ class BundleBuilder(IndexBuilder):
 			alignMutableToMultiple(section, SECTOR_SIZE)
 
 		logging.info("uncompressed section sizes:")
-		logging.info(f"header:    {headerLength:7d} bytes")
-		logging.info(f"VRAM data: {lengths[0]:7d} bytes ({100 * lengths[0] / VRAM_DATA_SIZE:4.1f}%)")
-		logging.info(f"SPU data:  {lengths[1]:7d} bytes ({100 * lengths[1] / SPU_DATA_SIZE:4.1f}%)")
-		logging.info(f"main data: {lengths[2]:7d} bytes ({100 * lengths[2] / DATA_SIZE:4.1f}%)")
+		logging.info(f"  header:    {headerLength:7d} bytes")
+		logging.info(f"  VRAM data: {lengths[0]:7d} bytes ({100 * lengths[0] / VRAM_DATA_SIZE:4.1f}%)")
+		logging.info(f"  SPU data:  {lengths[1]:7d} bytes ({100 * lengths[1] / SPU_DATA_SIZE:4.1f}%)")
+		logging.info(f"  main data: {lengths[2]:7d} bytes ({100 * lengths[2] / DATA_SIZE:4.1f}%)")
 
 	def serialize(self):
 		yield from ( self.header, self.vramData, self.spuData, self.data )

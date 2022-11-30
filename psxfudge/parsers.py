@@ -5,8 +5,8 @@ import re, json, logging
 from collections import defaultdict
 from xml.etree   import ElementTree
 
-from PIL    import Image
-from ._util import parseRange, parseText, parseJSON, parseKeyValue, CaseDict
+from PIL   import Image
+from .util import parseRange, parseText, parseJSON, parseKeyValue, CaseDict
 
 ## Key-value file parser
 
@@ -118,10 +118,7 @@ def _parseJSONAtlas(path):
 
 		yield image, entries
 
-# This is a custom format used exclusively in Friday Night Funkin' Week 6 for
-# some reason. Thankfully it's trivial to parse as it's just a text file with
-# coordinates, but still... 3 different formats in a single game, wtf.
-def _parseFNFAtlas(path):
+def _parseTextAtlas(path):
 	entries = defaultdict(dict)
 
 	with open(path, "rt") as _file:
@@ -148,8 +145,8 @@ def _parseFNFAtlas(path):
 ATLAS_EXTENSIONS = CaseDict({
 	".xml":  _parseXMLAtlas,
 	".json": _parseJSONAtlas,
-	".txt":  _parseFNFAtlas,
-	".ini":  _parseFNFAtlas
+	".txt":  _parseTextAtlas,
+	".ini":  _parseTextAtlas
 })
 
 def _sortFrames(name, frames):

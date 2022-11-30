@@ -13,19 +13,19 @@ https://github.com/TeamHypersomnia/rectpack2D
 import logging
 
 import numpy
-from ._image import ImageWrapper
+from .image import ImageWrapper
 
 ## Texture/palette packer
 
 # Sorting doesn't take the images' color depths and packed widths into account.
-SORT_ORDERS = {
-	"area":         lambda image: image.width * image.height,
-	"perimeter":    lambda image: (image.width + image.height) * 2,
-	"longest":      lambda image: max(image.width, image.height),
-	"width":        lambda image: image.width,
-	"height":       lambda image: image.height,
-	"pathological": lambda image: image.getPathologicalMult()
-}
+SORT_ORDERS = (
+	lambda image: image.width * image.height,
+	lambda image: (image.width + image.height) * 2,
+	lambda image: max(image.width, image.height),
+	lambda image: image.width,
+	lambda image: image.height,
+	lambda image: image.getPathologicalMult()
+)
 
 def _attemptPacking(images, atlasWidth, atlasHeight, altSplit):
 	# Start with a single empty space representing the entire atlas.
@@ -165,8 +165,9 @@ def packImages(images, atlasWidth, atlasHeight, discardStep, trySplits):
 	highestArea = 0
 
 	for reverse in ( True, False ):
-		for orderName, order in SORT_ORDERS.items():
-			_images = sorted(images, key = order, reverse = reverse)
+		for orderIndex, order in enumerate(SORT_ORDERS):
+			logString = f"sort criterion {orderIndex}{' rev' if reverse else ''}"
+			_images   = sorted(images, key = order, reverse = reverse)
 
 			newWidth  = atlasWidth
 			newHeight = atlasHeight
@@ -207,14 +208,14 @@ def packImages(images, atlasWidth, atlasHeight, discardStep, trySplits):
 				# if we're trying to exceed the maximum atlas size.
 				if bestIndex == 3 or bestIndex == 7:
 					if packed == len(images):
-						logging.debug(f"sort by {orderName} rev={reverse}: all images packed, aborting search")
+						logging.debug(f"{logString}: all images packed, aborting search")
 						break
 
 					if (
 						(newWidth + step) > atlasWidth or
 						(newHeight + step) > atlasHeight
 					):
-						logging.debug(f"sort by {orderName} rev={reverse}: can't extend atlas, aborting search")
+						logging.debug(f"{logString}: can't extend atlas, aborting search")
 						break
 
 					newWidth  += step
@@ -224,7 +225,7 @@ def packImages(images, atlasWidth, atlasHeight, discardStep, trySplits):
 
 				step //= 2
 
-			logging.debug(f"sort by {orderName} rev={reverse}: {newWidth}x{newHeight}, {packed} images packed")
+			logging.debug(f"{logString}: {newWidth}x{newHeight}, {packed} images packed")
 
 			if area > highestArea:
 				highestArgs = _images, newWidth, newHeight, (bestIndex > 3)

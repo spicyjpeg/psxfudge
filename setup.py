@@ -7,13 +7,14 @@ from numpy        import get_include
 
 setup(
 	packages = [
-		"psxfudge"
+		"psxfudge",
+		"psxfudge.cli"
 	],
 	ext_modules = cythonize([
 		Extension(
-			"psxfudge._native",
+			"psxfudge.native",
 			[
-				"psxfudge/_native.pyx",
+				"psxfudge/native.pyx",
 				"libimagequant/blur.c",
 				"libimagequant/kmeans.c",
 				"libimagequant/libimagequant.c",

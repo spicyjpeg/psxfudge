@@ -6,8 +6,8 @@ from struct import Struct
 
 import numpy
 from PIL      import Image
-from ._util   import blitArray, CaseDict
-from ._native import quantizeImage, toPS1ColorSpace, toPS1ColorSpace2D
+from .util   import blitArray, CaseDict
+from .native import quantizeImage, toPS1ColorSpace, toPS1ColorSpace2D
 
 ## Image wrapper class (used by texture packer)
 

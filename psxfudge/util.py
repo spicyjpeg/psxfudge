@@ -1,14 +1,13 @@
 # -*- coding: utf-8 -*-
 # (C) 2022 spicyjpeg
 
-import re, math, logging, json
+import re, math, json
 from time        import gmtime
 from pathlib     import Path
 from collections import UserDict
 from ast         import literal_eval
 from struct      import Struct
 from tempfile    import mkdtemp
-from argparse    import ArgumentParser, FileType, Action
 
 import numpy
 
@@ -245,7 +244,6 @@ def iteratePaths(paths):
 COMMENT_REGEX = {
 	"shell":  re.compile(r"((?:\".*\"|'.*'|[^\"'])*?)(?:\#.*)?$", re.MULTILINE),
 	"python": re.compile(r"((?:\".*\"|'.*'|[^\"'])*?)(?:(?:\#.*)?$|\"\"\"(?:.|\n)*?\"\"\"|'''(?:.|\n)*?''')", re.MULTILINE),
-	#"js":     re.compile(r"((?:\".*\"|'.*'|[^\"'])*?)(?:\/\/.*)?$"),
 	"js":     re.compile(r"((?:\".*\"|'.*'|[^\"'])*?)(?:(?:\/\/.*)?$|\/\*(?:.|\n)*?\*\/)", re.MULTILINE)
 }
 
@@ -304,105 +302,6 @@ class CaseDict(UserDict):
 
 	def items(self):
 		return self.data.values()
-
-## Command line argument parser
-
-class _ListPropertiesAction(Action):
-	def __init__(self, **namedArgs):
-		namedArgs["nargs"] = 0
-		super().__init__(**namedArgs)
-
-	def __call__(self, parser, namespace, values, option):
-		maxLength  = max(map(len, parser.defaultProperties.keys()))
-		properties = "\n".join(
-			f"  {key.ljust(maxLength)} = {json.dumps(value)}"
-			for key, value in parser.defaultProperties.items()
-		)
-
-		parser.exit(0, f"Default property values:\n{properties}")
-
-class ArgParser(ArgumentParser):
-	"""
-	An enhanced subclass of argparse.ArgumentParser that automatically sets up
-	logging, common options and handles property parsing.
-	"""
-
-	def __init__(self, description, defaultProperties = None):
-		super().__init__(
-			description  = description,
-			epilog       = "This tool is part of the PSXFudge toolkit.",
-			add_help     = False,
-			allow_abbrev = False
-			#fromfile_prefix_chars = "@"
-		)
-		self.defaultProperties = defaultProperties
-
-		group = self.add_argument_group("Tool options")
-		group.add_argument(
-			"-h", "--help",
-			action = "help",
-			help   = "Show this help message and exit"
-		)
-		group.add_argument(
-			"-v", "--verbose",
-			action = "count",
-			help   = "Increase logging verbosity (-v = info, -vv = info + debug)"
-		)
-
-		if defaultProperties is not None:
-			group.add_argument(
-				"-L", "--list-properties",
-				action = _ListPropertiesAction,
-				help   = "List all supported properties and their default values and exit"
-			)
-
-			group = self.add_argument_group("Configuration options")
-			group.add_argument(
-				"-s", "--set",
-				action  = "append",
-				type    = str,
-				help    = "Set the value of a property (use JSON syntax to specify value)",
-				metavar = "property=value"
-			)
-			group.add_argument(
-				"-p", "--properties",
-				type    = FileType("rt"),
-				help    = "Read properties from the root object of the specified JSON file",
-				metavar = "file"
-			)
-
-	def parse(self, args = None):
-		args = self.parse_args(args)
-
-		logging.basicConfig(
-			format = "[%(funcName)-13s %(levelname)-7s] %(message)s",
-			level  = (
-				logging.WARNING,
-				logging.INFO,    # -v
-				logging.DEBUG    # -vv
-			)[min(args.verbose or 0, 2)]
-		)
-
-		if self.defaultProperties is not None:
-			properties = CaseDict(self.defaultProperties)
-
-			if args.properties:
-				with args.properties as _file:
-					try:
-						properties.update(parseJSON(_file.read()))
-					except:
-						self.error(f"failed to parse properties from {args.properties.name}")
-			if args.set:
-				for arg in args.set:
-					try:
-						key, value = arg.split("=", 1)
-						properties[key] = json.loads(value)
-					except:
-						self.error(f"invalid property specification: {arg}")
-
-			args.properties = properties
-
-		return args
 
 ## Persistent cache directory
 

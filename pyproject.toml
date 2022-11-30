@@ -34,6 +34,5 @@ classifiers     = [
 "Homepage" = "https://github.com/spicyjpeg/psxfudge"
 
 [project.scripts]
-fudgebundle = "psxfudge.fudgebundle:main"
-fudgestream = "psxfudge.fudgestream:main"
-fudgetim    = "psxfudge.fudgetim:main"
+fudgetim    = "psxfudge.cli.tim:fudgetim"
+fudgebundle = "psxfudge.cli.bundle:fudgebundle"
