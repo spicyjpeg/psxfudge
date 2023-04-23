@@ -38,7 +38,13 @@ class _FudgeBundle(MultiEntryTool):
 
 			name  = entry["name"].strip()
 			_from = tuple(iteratePaths(entry["from"]))
-			_type = entry["type"].strip().lower()
+
+			if isinstance(entry["type"], str):
+				_type = entry["type"].strip().lower()
+			elif isinstance(entry["type"], int):
+				_type = entry["type"]
+			else:
+				raise RuntimeError("entry type must be a string or an integer")
 
 			# Add the asset to the bundle, preprocessing it if it's a background,
 			# texture or sound or importing it as-is in other cases.
