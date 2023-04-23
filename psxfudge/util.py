@@ -66,6 +66,12 @@ def alignMutableToMultiple(obj, length, padding = b"\x00"):
 	if remaining < length:
 		obj.extend(padding * remaining)
 
+def closestHigherMultiple(x, length):
+	"""
+	Returns the first multipe of `length` higher than `x`
+	"""
+	return math.ceil(x /  length) * length
+
 def hash32(obj):
 	"""
 	Returns the 32-bit "sdbm hash" of a string, byte array or other iterable.

@@ -7,8 +7,8 @@ from enum      import IntEnum
 from itertools import chain
 
 from .packer import buildTexpages
-from .util   import alignToMultiple, alignMutableToMultiple, hash32, \
-	bestHashTableLength
+from .util   import alignToMultiple, alignMutableToMultiple, \
+	closestHigherMultiple, hash32, bestHashTableLength
 
 ## Index file generator
 
@@ -287,13 +287,22 @@ class BundleBuilder(IndexBuilder):
 				)
 
 	def generate(self):
+		
+		# Calculate section lengths which are aligned to SECTOR_SIZE to make the
+		# file easier to parse on the PSX
+		alignedVramLength 	= closestHigherMultiple(len(self.vramData),SECTOR_SIZE)
+		alignedSpuLength 	= closestHigherMultiple(len(self.spuData),SECTOR_SIZE)
+		alignedDataLength 	= closestHigherMultiple(len(self.data),SECTOR_SIZE)
+
 		headerLength = super().generate(True) + BUNDLE_HEADER_STRUCT.size
-		lengths      = len(self.vramData), len(self.spuData), len(self.data)
+		alignedHeaderLength = closestHigherMultiple(headerLength,SECTOR_SIZE)
+
+		lengths = alignedVramLength, alignedSpuLength, alignedDataLength
 
 		self.header = bytearray(BUNDLE_HEADER_STRUCT.pack(
 			BUNDLE_HEADER_MAGIC,   # .magic
 			BUNDLE_HEADER_VERSION, # .version
-			headerLength,          # .headerLength
+			alignedHeaderLength,   # .headerLength
 			*lengths,              # .sectionLengths
 		))
 		self.header.extend(super().serialize(True))
