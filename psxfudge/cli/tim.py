@@ -4,19 +4,17 @@
 import logging
 from pathlib import Path
 
-from PIL       import Image
 from ..image   import convertImage
-from ..packer  import buildTexpages
 from ..parsers import importImages
-from ..util    import unpackNibbles2D, iteratePaths
-from .common   import IMAGE_PROPERTIES, TIM_IMAGE_PROPERTIES, Tool, \
-	MultiEntryTool
+from ..util    import iteratePaths
+from .common   import IMAGE_PROPERTIES, TIM_IMAGE_PROPERTIES, Tool
 
 ## Tool classes
 
 class _FudgeTIM(Tool):
 	def __init__(self):
 		super().__init__(
+			"fudgetim",
 			"Converts one or more images into the .TIM format.",
 			IMAGE_PROPERTIES | TIM_IMAGE_PROPERTIES
 		)
@@ -30,8 +28,7 @@ class _FudgeTIM(Tool):
 		px, py = properties["palettePos"]
 
 		images = tuple(importImages(
-			iteratePaths(args.inputFile),
-			args.properties
+			iteratePaths(args.inputFile), properties
 		))
 
 		# Ensure the placeholders are present in the output path if there are
@@ -47,7 +44,7 @@ class _FudgeTIM(Tool):
 			logging.info(f"processing {name} (frames: {len(frames)})")
 
 			for index, frame in enumerate(frames):
-				image = convertImage(frame, args.properties)
+				image = convertImage(frame, properties)
 				path  = Path(str(args.outputFile).format(
 					name  = name,
 					frame = index
@@ -64,3 +61,6 @@ class _FudgeTIM(Tool):
 ## Exports
 
 fudgetim = _FudgeTIM()
+
+if __name__ == "__main__":
+	fudgetim()

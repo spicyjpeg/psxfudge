@@ -118,15 +118,16 @@ SOUND_HEADER_STRUCT   = Struct("< 4H")
 
 class EntryType(IntEnum):
 	FILE         = 0x0000
-	TEXTURE      = 0x0001 # Progressive animated texture
-	ITEXTURE     = 0x8001 # Interlaced animated texture
-	BG           = 0x0002 # Progressive background (in main RAM)
-	IBG          = 0x8002 # Interlaced background (in main RAM)
-	SOUND        = 0x0003
-	STRING_TABLE = 0x0004
+	TEXTURE      = 0x0010 # Progressive animated texture
+	ITEXTURE     = 0x0011 # Interlaced animated texture
+	BG           = 0x0020 # Progressive background (in main RAM)
+	IBG          = 0x0021 # Interlaced background (in main RAM)
+	SOUND        = 0x0030
+	STRING_TABLE = 0x0040
+	CUSTOM       = 0x8000
 
-DATA_SIZE      = 0x180000    # Approximately 1.5 MB for main data section
-VRAM_DATA_SIZE = 0x8000 * 20 # 20 texpages
+DATA_SIZE      = 0x180000 # Approximately 1.5 MB for main data section
+VRAM_DATA_SIZE = 0x100000 # 32 pages (not taking framebuffers into account)
 SPU_DATA_SIZE  = 0x7d000
 SECTOR_SIZE    = 0x800
 
@@ -155,6 +156,9 @@ class BundleBuilder(IndexBuilder):
 		self.data.extend(alignToMultiple(data, 4))
 
 		logging.debug(f"({name}) type=0x{entryType:x}, offset=0x{len(self.data):x}")
+
+	def addFile(self, name, data):
+		self.addEntry(name, data, EntryType.FILE)
 
 	def addTexture(self, name, images, interlaced = False):
 		if images[0].width > 255 or images[0].height > 255:
@@ -287,22 +291,27 @@ class BundleBuilder(IndexBuilder):
 				)
 
 	def generate(self):
-		headerLength = super().generate(True) + BUNDLE_HEADER_STRUCT.size
-		lengths      = len(self.vramData), len(self.spuData), len(self.data)
+		super().generate(True)
 
-		self.header = bytearray(BUNDLE_HEADER_STRUCT.pack(
-			BUNDLE_HEADER_MAGIC,   # .magic
-			BUNDLE_HEADER_VERSION, # .version
-			headerLength,          # .headerLength
-			*lengths,              # .sectionLengths
-		))
+		# As in buildVRAM(), the header section needs to be populated with a
+		# dummy header as the aligned lengths of each section are not yet known.
+		self.header = bytearray(BUNDLE_HEADER_STRUCT.size)
 		self.header.extend(super().serialize(True))
 
 		for section in ( self.header, self.vramData, self.spuData, self.data ):
 			alignMutableToMultiple(section, SECTOR_SIZE)
 
+		lengths = len(self.vramData), len(self.spuData), len(self.data)
+
+		self.header[0:BUNDLE_HEADER_STRUCT.size] = BUNDLE_HEADER_STRUCT.pack(
+			BUNDLE_HEADER_MAGIC,   # .magic
+			BUNDLE_HEADER_VERSION, # .version
+			len(self.header),      # .headerLength
+			*lengths,              # .sectionLengths
+		)
+
 		logging.info("uncompressed section sizes:")
-		logging.info(f"  header:    {headerLength:7d} bytes")
+		logging.info(f"  header:    {len(self.header):7d} bytes")
 		logging.info(f"  VRAM data: {lengths[0]:7d} bytes ({100 * lengths[0] / VRAM_DATA_SIZE:4.1f}%)")
 		logging.info(f"  SPU data:  {lengths[1]:7d} bytes ({100 * lengths[1] / SPU_DATA_SIZE:4.1f}%)")
 		logging.info(f"  main data: {lengths[2]:7d} bytes ({100 * lengths[2] / DATA_SIZE:4.1f}%)")

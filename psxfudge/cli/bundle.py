@@ -20,7 +20,9 @@ from .common    import IMAGE_PROPERTIES, SOUND_PROPERTIES, \
 class _FudgeBundle(MultiEntryTool):
 	def __init__(self):
 		super().__init__(
-			"Converts source assets listed in a JSON file and builds an asset bundle file.",
+			"fudgebundle",
+			"Converts source assets listed in a JSON file and builds an asset "
+			"bundle file.",
 			IMAGE_PROPERTIES | SOUND_PROPERTIES | STRING_TABLE_PROPERTIES
 		)
 
@@ -38,16 +40,17 @@ class _FudgeBundle(MultiEntryTool):
 
 			name  = entry["name"].strip()
 			_from = tuple(iteratePaths(entry["from"]))
-			_type = entry["type"].strip().lower()
+			_type = str(entry["type"]).strip().lower()
 
-			# Add the asset to the bundle, preprocessing it if it's a background,
-			# texture or sound or importing it as-is in other cases.
+			# Add the asset to the bundle, preprocessing it if it's a texture or
+			# sound or importing it as-is in other cases. If the type does not
+			# match any known type, interpret it as a number.
 			match _type:
 				case "texture" | "itexture":
 					# Assume that the source file is a spritesheet containing
-					# multiple animated textures (importImages() also treats single
-					# images as spritesheets) and add each texture to the bundle
-					# separately.
+					# multiple animated textures (importImages() also treats
+					# single images as spritesheets) and add each texture to the
+					# bundle separately.
 					for _name, frameList in importImages(_from, entry):
 						bundle.addTexture(
 							name.format(sprite = _name),
@@ -85,9 +88,13 @@ class _FudgeBundle(MultiEntryTool):
 						int(entry["align"])
 					)
 
+				case "file":
+					with open(entry["from"], "rb") as _file:
+						bundle.addFile(name, _file.read())
+
 				case _:
 					with open(entry["from"], "rb") as _file:
-						bundle.addEntry(name, _file.read(), _type)
+						bundle.addEntry(name, _file.read(), int(_type, 0))
 
 		logging.info(f"added {len(bundle.entries)} items to bundle")
 
@@ -98,10 +105,10 @@ class _FudgeBundle(MultiEntryTool):
 		)
 
 		for index, page in enumerate(pages):
-			# Save all generated texpages (after expanding them back to 4/8bpp) as
-			# grayscale images to the specified debug path if any. Note that this
-			# loop has to be executed even if the pages aren't going to be saved,
-			# due to buildVRAM() being a generator function.
+			# Save all generated texpages (after expanding them back to 4/8bpp)
+			# as grayscale images to the specified debug path if any. Note that
+			# this loop has to be executed even if the pages aren't going to be
+			# saved, due to buildVRAM() being a generator function.
 			if args.atlas_debug:
 				prefix = args.atlas_debug.joinpath(f"{index:02d}")
 				page4  = unpackNibbles2D(page) << 4
@@ -118,3 +125,6 @@ class _FudgeBundle(MultiEntryTool):
 ## Exports
 
 fudgebundle = _FudgeBundle()
+
+if __name__ == "__main__":
+	fudgebundle()

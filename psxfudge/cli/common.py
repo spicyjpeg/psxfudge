@@ -77,9 +77,10 @@ class Tool:
 	Internal base class for all PSXFudge command-line tools.
 	"""
 
-	def __init__(self, description, defaults = None):
+	def __init__(self, name, description, defaults = None):
 		self.defaults = defaults
 		self.parser   = ArgumentParser(
+			prog         = name,
 			description  = description,
 			epilog       = "This tool is part of the PSXFudge toolkit.",
 			add_help     = False,
