@@ -1,16 +1,17 @@
 # -*- coding: utf-8 -*-
-# (C) 2022 spicyjpeg
+# (C) 2022-2023 spicyjpeg
 
-"""
+"""Image packing algorithm implementation
+
 The texture packing algorithm implemented here is based on the rectpack2D
 library, with some improvements and PS1-specific quirks (4/8bpp texture
-rotation, texpage boundaries...) added. It should be possible to use it for
-other purposes/platforms by writing a custom ImageWrapper class.
+rotation, margins, texture page boundaries...) added.
 
 https://github.com/TeamHypersomnia/rectpack2D
 """
 
 import logging
+from itertools import accumulate
 
 import numpy
 from .image import ImageWrapper
@@ -19,15 +20,15 @@ from .image import ImageWrapper
 
 # Sorting doesn't take the images' color depths and packed widths into account.
 SORT_ORDERS = (
-	lambda image: image.width * image.height,
-	lambda image: (image.width + image.height) * 2,
-	lambda image: max(image.width, image.height),
-	lambda image: image.width,
-	lambda image: image.height,
+	lambda image: image.innerWidth * image.innerHeight,
+	lambda image: (image.innerWidth + image.innerHeight) * 2,
+	lambda image: max(image.innerWidth, image.innerHeight),
+	lambda image: image.innerWidth,
+	lambda image: image.innerHeight,
 	lambda image: image.getPathologicalMult()
 )
 
-def _attemptPacking(images, atlasWidth, atlasHeight, altSplit):
+def _attemptPacking(images, atlasWidth, atlasHeight, page, altSplit):
 	# Start with a single empty space representing the entire atlas.
 	spaces = [
 		( 0, 0, atlasWidth, atlasHeight )
@@ -42,18 +43,20 @@ def _attemptPacking(images, atlasWidth, atlasHeight, altSplit):
 		# one of another image. Note that hashing relies on palettes being
 		# sorted with the same criteria across all images.
 		# TODO: speed up packing by only performing this check ahead of time in
-		# packImages() or buildTexpages()
+		# packImages() or buildAtlases()
 		if (_hash := image.getHash()) in hashes:
 			_image = hashes[_hash]
 
 			image.x    = _image.x
 			image.y    = _image.y
+			image.page = _image.page
 			image.flip = _image.flip
 			packed    += 1
 			continue
 
-		image.x = None
-		image.y = None
+		image.x    = None
+		image.y    = None
+		image.page = None
 
 		# Try placing the texture in either orientation. As the image's actual
 		# width in the texture page depends on its color depth (i.e. indexed
@@ -145,18 +148,20 @@ def _attemptPacking(images, atlasWidth, atlasHeight, altSplit):
 
 			image.x       = x + offsetX
 			image.y       = y + offsetY
+			image.page    = page
 			image.flip    = flip
 			hashes[_hash] = image
-			area         += width * height
-			packed       += 1
+
+			area   += width * height
+			packed += 1
 			break
 
 	return area, packed
 
-def packImages(images, atlasWidth, atlasHeight, discardStep, trySplits):
+def packImages(images, atlasWidth, atlasHeight, page, discardStep, trySplits):
 	"""
 	Takes a list of ImageWrapper objects and packs them in an atlas, setting
-	their x, y and flip attributes (or leaving them set to None in case of
+	their x, y, page and flip attributes (or leaving them set to None in case of
 	failure). Returns a ( totalArea, numPackedImages ) tuple.
 	"""
 
@@ -190,9 +195,10 @@ def packImages(images, atlasWidth, atlasHeight, discardStep, trySplits):
 
 				for altSplit in splitModes:
 					for width, height in candidates:
-						packResults.append(
-							_attemptPacking(_images, width, height, altSplit)
+						results = _attemptPacking(
+							_images, width, height, page, altSplit
 						)
+						packResults.append(results)
 
 				# Find the case that led to the highest packing area. Stop once
 				# the atlas can't be further shrunk down nor needs to be
@@ -228,7 +234,7 @@ def packImages(images, atlasWidth, atlasHeight, discardStep, trySplits):
 			logging.debug(f"{logString}: {newWidth}x{newHeight}, {packed} images packed")
 
 			if area > highestArea:
-				highestArgs = _images, newWidth, newHeight, (bestIndex > 3)
+				highestArgs = _images, newWidth, newHeight, page, (bestIndex > 3)
 				highestArea = area
 
 				# Stop trying other sorting algorithms if all images have been
@@ -241,65 +247,65 @@ def packImages(images, atlasWidth, atlasHeight, discardStep, trySplits):
 
 	return _attemptPacking(*highestArgs)
 
-def packPalettes(images, atlasWidth, atlasHeight, preserveLSB = False):
+def packPalettes(images, atlasWidth, atlasHeight, page, preserveLSB = False):
 	"""
-	Takes an iterable of ImageWrapper objects and returns a
-	( newAtlas, freeHeight ) tuple containing an atlas with all palettes placed
-	at the bottom. The px and py attributes of each image are also set to point
-	to their respective palettes.
+	Takes an iterable of ImageWrapper objects and packs their palettes along the
+	bottom edge of an atlas, setting their px, py and palettePage attributes
+	accordingly. Returns a ( freeHeight, numPackedPalettes ) tuple.
 	"""
 
-	_images = []
-	hashes  = {} # hash: image
-	px, py  = 0, atlasHeight - 1
+	hashes = {} # hash: image
+	packed = 0
+	px, py = 0, atlasHeight - 1
 
-	# Sort images by their BPP to make sure all 256-color palettes get packed
-	# first.
+	# Sort images by their color depth to make sure all 256-color palettes get
+	# packed first.
 	for image in sorted(
 		images,
 		key     = lambda image: image.bpp,
 		reverse = True
 	):
-		if image.bpp == 16:
+		#if image.bpp == 16:
+			#continue
+		if (width := 2 ** image.bpp) > atlasWidth:
 			continue
 
 		# Remove duplicate/similar palettes by comparing their hashes. The LSB
 		# of each RGB value is masked off (see getPaletteHash()) to remove
 		# palettes that are close enough to another palette. As usual the
 		# palettes have to be sorted ahead of time for this to work.
-		if (_hash := image.getPaletteHash(preserveLSB)) in hashes:
-			_image = hashes[_hash]
+		_hash = image.getPaletteHash(preserveLSB)
 
-			image.px = _image.px
-			image.py = _image.py
+		if (_image := hashes.get(_hash, None)) is not None:
+			image.px          = _image.px
+			image.py          = _image.py
+			image.palettePage = page
+
+			packed += 1
 			continue
 
-		image.px      = px // 16
-		image.py      = py
-		hashes[_hash] = image
-		_images.append(image)
+		image.px          = px // 16
+		image.py          = py
+		image.palettePage = page
+		hashes[_hash]     = image
 
-		px += 2 ** image.bpp
-		py -= px // atlasWidth
-		px %= atlasWidth
+		packed += 1
+		px     += width
+		py     -= px // atlasWidth
+		px     %= atlasWidth
 
-	if not _images:
-		return
+		if py < 0:
+			break
 
-	atlas = numpy.zeros(( atlasHeight, atlasWidth * 2 ), numpy.uint8)
-	for image in _images:
-		image.blitPalette(atlas)
-
-	logging.debug(f"packed {len(_images)} palettes")
-	return atlas, py + (0 if px else 1)
+	return py + (0 if px else 1), packed
 
 ## Texture page generator
 
-TEXPAGE_WIDTH     =  64
-TEXPAGE_MAX_WIDTH = 256
-TEXPAGE_HEIGHT    = 256
+ATLAS_MIN_WIDTH = 64
+ATLAS_MAX_WIDTH = 256
+ATLAS_HEIGHT    = 256
 
-def buildTexpages(
+def buildAtlases(
 	images,
 	discardStep      = 1,
 	trySplits        = False,
@@ -307,61 +313,117 @@ def buildTexpages(
 ):
 	"""
 	Takes an iterable of ImageWrapper objects, packs them and yields a series
-	of NumPy arrays representing PS1 texture pages. The size (width) of each
-	page may vary from 64 to 256 pixels, based on what needs to be packed.
+	of NumPy arrays representing texture atlases. The size (width) of each
+	atlas may vary from 64 to 256 pixels, depending on what needs to be packed.
 	"""
 
-	_images = images
-	index   = 0
+	_images   = images
+	_palettes = list(filter(lambda image: image.bpp != 16, images))
+	index     = 0
 
-	while _images:
-		atlasWidth = TEXPAGE_WIDTH
-		failed     = []
+	while _images or _palettes:
+		atlasWidth = ATLAS_MIN_WIDTH
 
-		# Determine the width of this page by going through the remaining
-		# images and checking if any of them has a 256-color palette to pack or
-		# is potentially too wide to fit after packing.
-		for image in _images:
-			if index == 0 and image.bpp == 8:
-				atlasWidth = TEXPAGE_MAX_WIDTH
+		# Pick an appropriate width for the atlas more or less heuristically,
+		# based on which textures still need to be packed. This may fail
+		# completely if the algorithm decides to prioritize smaller textures
+		# (thus producing an unnecessarily large atlas), but that does not
+		# usually happen.
+		for image in _palettes:
+			if image.bpp == 8:
+				atlasWidth = ATLAS_MAX_WIDTH
 				break
 
-			while image.getPackedMaxSize()[0] > atlasWidth:
-				atlasWidth *= 2
+		if atlasWidth < ATLAS_MAX_WIDTH:
+			for image in _images:
+				while atlasWidth < image.getPackedMaxWidth():
+					atlasWidth += ATLAS_MIN_WIDTH
 
-			if atlasWidth == TEXPAGE_MAX_WIDTH:
-				break
+					if atlasWidth == ATLAS_MAX_WIDTH:
+						break
 
-		# If this is the first page being generated, gather all palettes and
-		# pack them at the bottom. Otherwise create a new empty page.
-		if index:
-			freeHeight = TEXPAGE_HEIGHT
-			atlas      = numpy.zeros(( freeHeight, atlasWidth * 2 ), numpy.uint8)
-		else:
-			atlas, freeHeight = packPalettes(
-				images, atlasWidth, TEXPAGE_HEIGHT, preservePalettes
-			)
-
-		area, packed = packImages(
-			_images, atlasWidth, freeHeight, discardStep, trySplits
+		freeHeight, packedPalettes = packPalettes(
+			_palettes, atlasWidth, ATLAS_HEIGHT, index, preservePalettes
+		)
+		area, packedImages = packImages(
+			_images, atlasWidth, freeHeight, index, discardStep, trySplits
 		)
 
-		if not packed:
-			raise RuntimeError("packing failed, one or more images might be larger than maximum texpage size")
+		if not packedPalettes and not packedImages:
+			raise RuntimeError("packing failed, attempted to generate an empty atlas")
 
-		# Collect the images that couldn't be packed and blit the other ones
-		# onto the page.
+		# Collect the images and palettes that couldn't be packed and blit
+		# everything else onto the atlas.
+		atlas = numpy.zeros(( ATLAS_HEIGHT, atlasWidth * 2 ), numpy.uint8)
+
+		unpackedImages   = []
+		unpackedPalettes = []
+
 		for image in _images:
-			if image.x is None:
-				failed.append(image)
-				continue
+			if image.page is None:
+				unpackedImages.append(image)
+			else:
+				image.blit(atlas)
 
-			image.page = index
-			image.blit(atlas)
+		for image in _palettes:
+			if image.palettePage is None:
+				unpackedPalettes.append(image)
+			else:
+				image.blitPalette(atlas)
 
-		_images = failed
-		index  += 1
-		ratio   = 100 * area / (atlasWidth * freeHeight)
+		_images    = unpackedImages
+		_palettes  = unpackedPalettes
+		index     += 1
+		ratio      = 100 * area / (atlasWidth * freeHeight)
 
-		logging.info(f"generated texpage {index} ({ratio:4.1f}% packing ratio, {len(failed)} images left)")
+		logging.info(f"atlas {index}: {atlasWidth}x{ATLAS_HEIGHT}, {ratio:4.1f}% packing ratio, {packedImages}/{len(_images)} images, {packedPalettes}/{len(_palettes)} palettes")
 		yield atlas
+
+def buildTexturePages(
+	images,
+	discardStep      = 1,
+	trySplits        = False,
+	preservePalettes = False
+):
+	"""
+	A wrapper around buildAtlases() that splits up multi-page atlases into
+	individual texture pages, sorts them by their width and fixes the page and
+	palettePage attributes of each image. Returns a list of buckets (lists of
+	texture pages), sorted by the respective atlases' widths in decreasing
+	order.
+	"""
+
+	numTypes = ATLAS_MAX_WIDTH // ATLAS_MIN_WIDTH
+	buckets  = [ [] for _ in range(numTypes) ]
+	indexMap = {} # index: bucketIndex, pageOffset
+
+	# Sort all atlases into one of four "buckets" (256x256, 192x256, 128x256,
+	# 64x256) and build a mapping of which atlas went into which bucket and how
+	# many texture pages were already present in that bucket.
+	for index, atlas in enumerate(
+		buildAtlases(images, discardStep, trySplits, preservePalettes)
+	):
+		width       = atlas.shape[1]
+		bucketIndex = numTypes - width // (ATLAS_MIN_WIDTH * 2)
+
+		bucket          = buckets[bucketIndex]
+		indexMap[index] = bucketIndex, len(bucket)
+
+		# Split the atlas into 64x256 texture pages.
+		for offset in range(0, width, ATLAS_MIN_WIDTH * 2):
+			bucket.append(atlas[:, offset:(offset + ATLAS_MIN_WIDTH * 2)])
+
+	# As all buckets are going to be concatenated, calculate the texture page
+	# offset each bucket is going to end up at, then derive the absolute texture
+	# page offset for each image and palette.
+	bucketOffsets = tuple(accumulate(map(len, buckets), initial = 0))
+
+	for image in images:
+		bucket, pageOffset = indexMap[image.page]
+		image.page         = bucketOffsets[bucket] + pageOffset
+
+		if image.palettePage is not None:
+			bucket, pageOffset = indexMap[image.palettePage]
+			image.palettePage  = bucketOffsets[bucket] + pageOffset
+
+	return buckets

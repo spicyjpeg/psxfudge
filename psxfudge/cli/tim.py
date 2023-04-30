@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# (C) 2022 spicyjpeg
+# (C) 2022-2023 spicyjpeg
 
 import logging
 from pathlib import Path
@@ -27,34 +27,40 @@ class _FudgeTIM(Tool):
 		x,  y  = properties["imagePos"]
 		px, py = properties["palettePos"]
 
-		images = tuple(importImages(
+		outputPath = str(args.outputFile)
+		images     = tuple(importImages(
 			iteratePaths(args.inputFile), properties
 		))
 
 		# Ensure the placeholders are present in the output path if there are
-		# name or frame number conflicts.
-		if len(images) > 1 and ("{name" not in args.outputFile):
+		# name, frame or mipmap level number conflicts.
+		if len(images) > 1 and ("{name" not in outputPath):
 			self.parser.error("more than one image to convert but the output path doesn't contain a {name} placeholder")
 
 		for name, frames in images:
-			if len(frames) > 1 and ("{frame" not in args.outputFile):
+			if len(frames) > 1 and ("{frame" not in outputPath):
 				self.parser.error(f"image '{name}' has more than one frame but the output path doesn't contain a {{frame}} placeholder")
 
-		for name, frames in images:
 			logging.info(f"processing {name} (frames: {len(frames)})")
 
 			for index, frame in enumerate(frames):
-				image = convertImage(frame, properties)
-				path  = Path(str(args.outputFile).format(
-					name  = name,
-					frame = index
-				))
+				mipLevels = tuple(convertImage(frame, properties))
 
-				image.x,  image.y  = int(x),  int(y)
-				image.px, image.py = int(px), int(py)
+				if len(mipLevels) > 1 and ("{mip" not in outputPath):
+					self.parser.error(f"image '{name}' has more than one mipmap level but the output path doesn't contain a {{mip}} placeholder")
 
-				with path.open("wb") as _file:
-					_file.write(image.toTIM())
+				for mip, image in enumerate(mipLevels):
+					path  = Path(outputPath.format(
+						name  = name,
+						frame = index,
+						mip   = mip
+					))
+
+					image.x,  image.y  = int(x),  int(y)
+					image.px, image.py = int(px), int(py)
+
+					with path.open("wb") as _file:
+						_file.write(image.toTIM())
 
 				logging.info(f"saved {path.name}")
 

@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
-# (C) 2022 spicyjpeg
+# (C) 2022-2023 spicyjpeg
+
+"""Internal utility library
+
+This module contains various helper classes and functions used internally.
+"""
 
 import re, math, json
 from time        import gmtime
@@ -14,38 +19,56 @@ import numpy
 ## Array/string/iterator utilities
 
 def blitArray(source, dest, position):
-	pos = (  (x if x >= 0 else None) for x in position )
-	neg = ( (-x if x  < 0 else None) for x in position )
+	"""
+	Copies the contents of the source array to the destination array at the
+	given position (which should be a list or tuple containing an integer for
+	each dimension of the source and destination arrays).
+	"""
+
+	pos = map(lambda x: x if x >= 0 else None, position)
+	neg = map(lambda x: -x if x < 0 else None, position)
 
 	destView = dest[tuple(
-		slice(x, None) for x in pos
+		slice(start, None) for start in pos
 	)]
 	sourceView = source[tuple(
-		slice(*args) for args in zip(neg, destView.shape)
+		slice(start, end) for start, end in zip(neg, destView.shape)
 	)]
 
 	destView[tuple(
-		slice(None, x) for x in source.shape
+		slice(None, end) for end in source.shape
 	)] = sourceView
 
-def unpackNibbles2D(data, highNibbleFirst = False):
+def cropArray(data, value = 0):
 	"""
-	Unpacks the low and high nibbles in a NumPy 2D array of bytes and returns
-	a new array whose width is doubled.
+	Removes all outer rows and columns whose value matches the provided one from
+	an array and returns a ( data, croppedLeft, croppedRight ) tuple.
 	"""
 
-	if data.ndim != 2:
-		raise ValueError("source array must be 2D")
+	indices  = numpy.argwhere(data != value)
+	minBound = indices.min(0)
+	maxBound = indices.max(0) + 1
 
-	unpacked = numpy.zeros((
-		data.shape[0],
-		data.shape[1] * 2
-	), data.dtype)
+	cropped = data[tuple(
+		slice(start, end) for start, end in zip(minBound, maxBound)
+	)]
 
-	unpacked[:, (1 if highNibbleFirst else 0)::2] = data & 0xf
-	unpacked[:, (0 if highNibbleFirst else 1)::2] = (data >> 4) & 0xf
+	return cropped, tuple(minBound), tuple(data.shape - maxBound)
 
-	return unpacked
+def unpackNibbles(data, highNibbleFirst = False):
+	"""
+	Unpacks the low and high nibbles in a NumPy array of bytes and returns a
+	new array whose last dimension is doubled.
+	"""
+
+	length   = numpy.product(data.shape)
+	unrolled = data.reshape(length)
+	unpacked = numpy.zeros(length * 2, data.dtype)
+
+	unpacked[(1 if highNibbleFirst else 0)::2] = unrolled & 0xf
+	unpacked[(0 if highNibbleFirst else 1)::2] = (unrolled >> 4) & 0xf
+
+	return unpacked.reshape(data.shape[:-1] + ( data.shape[-1] * 2, ))
 
 def alignToMultiple(data, length, padding = b"\x00"):
 	"""

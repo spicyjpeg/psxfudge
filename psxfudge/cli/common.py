@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# (C) 2022 spicyjpeg
+# (C) 2022-2023 spicyjpeg
 
 import sys, re, logging, json
 from collections import ChainMap
@@ -14,18 +14,20 @@ from .__init__  import __version__ as CLI_VERSION
 
 IMAGE_PROPERTIES = {
 	"match":      ".*",
-	"frames":     "0-255",
+	"frames":     "0-0xffff",
+	"mipLevels":  1,
 	"crop":       ( 0, 0, 0x10000, 0x10000 ),
 	"scale":      1.0,
+	"mipScale":   0.5,
 	"bpp":        4,
 	"palette":    "auto",
-	"dither":     0.2,
+	"dither":     0,
 	"scaleMode":  "lanczos",
 	"alphaRange": ( 0x20, 0xe0 ),
 	"blackValue": ( 1, 1, 1, 0 ),
 	"cropMode":   "none",
 	"padding":    0,
-	"flipMode":   "preferUnflipped"
+	"flipMode":   "none"
 }
 
 TIM_IMAGE_PROPERTIES = {
@@ -68,7 +70,7 @@ class _ListPropertiesAction(Action):
 			for key, value in self.defaults.items()
 		)
 
-		parser.exit(0, f"Default property values:\n{properties}")
+		parser.exit(0, f"Default property values:\n{properties}\n")
 
 ## Main classes for command-line tools
 
@@ -181,9 +183,9 @@ class Tool:
 			help   = "Disable deduplicating 'similar' palettes (only deduplicate palettes that are actually identical)"
 		)
 		group.add_argument(
-			"-A", "--atlas-debug",
+			"-A", "--dump-atlas",
 			type    = Path,
-			help    = "Save PNGs of generated texture pages to the specified directory for debugging/inspection",
+			help    = "Save all generated texture pages as a single image to specified path for inspection",
 			metavar = "path"
 		)
 

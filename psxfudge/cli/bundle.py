@@ -1,17 +1,18 @@
 # -*- coding: utf-8 -*-
-# (C) 2022 spicyjpeg
+# (C) 2022-2023 spicyjpeg
 
 import logging
 from collections import ChainMap
+from itertools   import chain
 from pathlib     import Path
 
-import av
+import av, numpy
 from PIL        import Image
 from ..image    import convertImage
 from ..audio    import convertSound
 from ..builders import BundleBuilder
 from ..parsers  import importKeyValue, importImages
-from ..util     import unpackNibbles2D, iteratePaths, parseJSON, CaseDict
+from ..util     import unpackNibbles, iteratePaths, parseJSON, CaseDict
 from .common    import IMAGE_PROPERTIES, SOUND_PROPERTIES, \
 	STRING_TABLE_PROPERTIES, MultiEntryTool
 
@@ -52,9 +53,14 @@ class _FudgeBundle(MultiEntryTool):
 					# single images as spritesheets) and add each texture to the
 					# bundle separately.
 					for _name, frameList in importImages(_from, entry):
+						images = [
+							tuple(convertImage(frame, entry))
+							for frame in frameList
+						]
+
 						bundle.addTexture(
 							name.format(sprite = _name),
-							[ convertImage(frame, entry) for frame in frameList ],
+							images,
 							_type == "itexture"
 						)
 
@@ -67,7 +73,7 @@ class _FudgeBundle(MultiEntryTool):
 					with Image.open(_from[0], "r") as _file:
 						bundle.addBG(
 							name,
-							convertImage(_file, entry),
+							next(convertImage(_file, entry)),
 							int(entry["crop"][0]),
 							int(entry["crop"][1]),
 							_type == "ibg"
@@ -98,25 +104,23 @@ class _FudgeBundle(MultiEntryTool):
 
 		logging.info(f"added {len(bundle.entries)} items to bundle")
 
-		pages = bundle.buildVRAM(
+		buckets = bundle.generate(
 			args.discard_step,
 			args.try_splits,
 			args.preserve_palettes
 		)
 
-		for index, page in enumerate(pages):
-			# Save all generated texpages (after expanding them back to 4/8bpp)
-			# as grayscale images to the specified debug path if any. Note that
-			# this loop has to be executed even if the pages aren't going to be
-			# saved, due to buildVRAM() being a generator function.
-			if args.atlas_debug:
-				prefix = args.atlas_debug.joinpath(f"{index:02d}")
-				page4  = unpackNibbles2D(page) << 4
+		if args.dump_atlas:
+			# Place all generated texture pages side-by-side, convert the
+			# resulting image from 4bpp to grayscale (ignoring palettes) and
+			# save it to the given path.
+			pages     = tuple(chain(*buckets))
+			imageData = unpackNibbles(numpy.hstack(pages)) << 4
 
-				#Image.fromarray(page,  "L").save(f"{prefix}_8.png")
-				Image.fromarray(page4, "L").save(f"{prefix}_4.png")
-
-		bundle.generate()
+			try:
+				Image.fromarray(imageData, "L").save(args.dump_atlas)
+			except:
+				logging.warning(f"failed to save atlas dump to {args.dump_atlas}")
 
 		with args.outputFile.open("wb") as _file:
 			for section in bundle.serialize():
