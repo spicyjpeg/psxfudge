@@ -39,9 +39,14 @@ class _FudgeBundle(MultiEntryTool):
 		for entryObj in entryList:
 			entry = ChainMap(forced, CaseDict(entryObj), defaults)
 
-			name  = entry["name"].strip()
+			name  = entry["name"]
 			_from = tuple(iteratePaths(entry["from"]))
-			_type = str(entry["type"]).strip().lower()
+			_type = entry["type"]
+
+			if type(name) is str:
+				name = name.strip()
+			if type(_type) is str:
+				_type = _type.strip().lower()
 
 			# Add the asset to the bundle, preprocessing it if it's a texture or
 			# sound or importing it as-is in other cases. If the type does not
@@ -99,8 +104,11 @@ class _FudgeBundle(MultiEntryTool):
 						bundle.addFile(name, _file.read())
 
 				case _:
+					if type(_type) is str:
+						_type = int(_type, 0)
+
 					with open(entry["from"], "rb") as _file:
-						bundle.addEntry(name, _file.read(), int(_type, 0))
+						bundle.addEntry(name, _file.read(), _type)
 
 		logging.info(f"added {len(bundle.entries)} items to bundle")
 

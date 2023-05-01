@@ -143,7 +143,8 @@ def toMSDOSTime(unixTime = None):
 
 ## String manipulation
 
-RANGE_ITEM_REGEX = re.compile(r"([0-9]+)(?:\s*?-\s*?([0-9]+)(?:\s*?:\s*?([0-9]+))?)?")
+INT_VALUE_REGEX  = re.compile(r"[-+]?\s*(?:0x[0-9a-f]+|0o[0-7]+|0b[01]+|[0-9]+)")
+RANGE_ITEM_REGEX = re.compile(fr"({INT_VALUE_REGEX.pattern})(?:\s*?-\s*?({INT_VALUE_REGEX.pattern})(?:\s*?:\s*?({INT_VALUE_REGEX.pattern}))?)?", re.IGNORECASE)
 
 def _isWithinBounds(value, minValue = None, maxValue = None):
 	if minValue is not None and value < minValue:
@@ -160,29 +161,33 @@ def parseRange(_range, minValue = None, maxValue = None):
 	"1 8-10 3-7:2") and yields all values (e.g. [ 1, 8, 9, 10, 3, 5, 7 ]).
 	"""
 
-	if type(_range) is not str:
-		for value in _range:
-			if _isWithinBounds(value, minValue, maxValue):
-				yield value
+	if type(_range) is int:
+		if _isWithinBounds(_range, minValue, maxValue):
+			yield _range
 
-		return
+	elif type(_range) is str:
+		for _match in RANGE_ITEM_REGEX.finditer(_range):
+			start, end, stride = _match.groups()
 
-	for _match in RANGE_ITEM_REGEX.finditer(_range):
-		start, end, stride = _match.groups()
+			if end is None:
+				value = int(start, 0)
 
-		if end is None:
-			value = int(start, 0)
+				if _isWithinBounds(value, minValue, maxValue):
+					yield value
+			else:
+				_start, _end = int(start, 0), int(end, 0)
+				_stride      = 1 if stride is None else int(stride, 0)
 
-			if _isWithinBounds(value, minValue, maxValue):
-				yield value
-		else:
-			_start, _end = int(start, 0), int(end, 0)
+				yield from range(
+					(_start if minValue is None else max(minValue, _start)),
+					(_end   if maxValue is None else min(maxValue, _end)) + _stride,
+					_stride
+				)
 
-			yield from range(
-				(_start if minValue is None else max(minValue, _start)),
-				(_end   if maxValue is None else min(maxValue, _end)) + 1,
-				1       if stride   is None else int(stride, 0)
-			)
+	else:
+		# Interpret the range as an iterable of strings and/or ints.
+		for item in _range:
+			yield from parseRange(item, minValue, maxValue)
 
 def isWithinRange(value, _range):
 	"""
@@ -191,23 +196,31 @@ def isWithinRange(value, _range):
 	"1 8-10 3-7:2") and checks whether the given value is within the range.
 	"""
 
-	if type(_range) is not str:
-		return (value in _range)
+	if type(_range) is int:
+		return (value == _range)
 
-	for _match in RANGE_ITEM_REGEX.finditer(_range):
-		start, end, stride = _match.groups()
+	elif type(_range) is str:
+		for _match in RANGE_ITEM_REGEX.finditer(_range):
+			start, end, stride = _match.groups()
 
-		if end is None:
-			if value == int(start, 0):
+			if end is None:
+				if value == int(start, 0):
+					return True
+			else:
+				_start, _end = int(start, 0), int(end, 0)
+				_stride      = 1 if stride is None else int(stride, 0)
+
+				if \
+					(_stride > 0 and value >= _start and value <= _end) or \
+					(_stride < 0 and value <= _start and value >= _end):
+					if not ((value - _start) % int(stride, 0)):
+						return True
+
+	else:
+		# Interpret the range as an iterable of strings and/or ints.
+		for item in _range:
+			if isWithinRange(value, item):
 				return True
-		else:
-			_start, _end = int(start, 0), int(end, 0)
-
-			if value >= _start and value <= _end:
-				if stride is None:
-					return True
-				if not ((value - _start) % int(stride, 0)):
-					return True
 
 	return False
 
