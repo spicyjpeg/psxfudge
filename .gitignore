@@ -7,9 +7,9 @@ desktop.ini
 build/
 dist/
 eggs/
-*.spec
 *.egg
 *.egg-info/
+*.dist-info/
 __pycache__/
 *.pyc
 *.pyo
