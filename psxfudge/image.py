@@ -1,13 +1,21 @@
 # -*- coding: utf-8 -*-
-# (C) 2022 spicyjpeg
+# (C) 2022-2023 spicyjpeg
+
+"""Image conversion module
+
+This module defines the ImageWrapper class to hold converted image and palette
+data, as well as functions to generate an ImageWrapper from a PIL/Pillow image
+object.
+"""
 
 import math, logging
 from struct import Struct
+from enum   import IntEnum
 
 import numpy
 from PIL      import Image
-from ._util   import blitArray, CaseDict
-from ._native import quantizeImage, toPS1ColorSpace, toPS1ColorSpace2D
+from .util   import blitArray, cropArray, CaseDict
+from .native import quantizeImage, toPS1ColorSpace, toPS1ColorSpace2D
 
 ## Image wrapper class (used by texture packer)
 
@@ -20,6 +28,15 @@ TIM_HEADER_STRUCT  = Struct("< 2I")
 TIM_HEADER_VERSION = 0x10
 TIM_SECTION_STRUCT = Struct("< I 4H")
 
+class ImageFlags(IntEnum):
+	BPP_4          = 0 << 0
+	BPP_8          = 1 << 0
+	BPP_16         = 2 << 0
+	INTERLACE_EVEN = 1 << 2
+	INTERLACE_ODD  = 2 << 2
+	HAS_MARGIN     = 1 << 4
+	FLIP           = 1 << 5
+
 class ImageWrapper:
 	"""
 	Wrapper class for converted images and palettes, holding metadata such as
@@ -29,10 +46,12 @@ class ImageWrapper:
 	def __init__(
 		self,
 		data,
-		palette   = None,
-		margin    = ( 0, 0 ),
-		padding   = 0,
-		flipModes = ( False, )
+		palette     = None,
+		leftMargin  = ( 0, 0 ),
+		rightMargin = ( 0, 0 ),
+		padding     = 0,
+		flipModes   = ( False, ),
+		field       = None
 	):
 		if data.ndim != 2:
 			raise ValueError("image data must be 2-dimensional")
@@ -41,15 +60,19 @@ class ImageWrapper:
 
 		self.data      = data
 		self.palette   = palette
-		self.margin    = margin
+		self.margin    = leftMargin
 		self.padding   = padding
 		self.flipModes = flipModes
+		self.field     = field
 
-		self.height, self.width = data.shape
+		self.innerHeight, self.innerWidth = data.shape
+		self.width  = leftMargin[0] + self.innerWidth  + rightMargin[0]
+		self.height = leftMargin[1] + self.innerHeight + rightMargin[1]
 
 		# These attributes are set by the packing functions and used by the
 		# blit*() methods.
 		self.page        = None
+		self.palettePage = None
 		self.x,  self.y  = None, None
 		self.px, self.py = None, None
 		self.flip        = False
@@ -64,25 +87,22 @@ class ImageWrapper:
 		scale = 16 // self.bpp
 
 		if flip:
-			width  = math.ceil((self.height + self.padding * 2) / scale)
-			height = self.width + self.padding * 2
+			width  = math.ceil((self.innerHeight + self.padding * 2) / scale)
+			height = self.innerWidth + self.padding * 2
 		else:
-			width  = math.ceil((self.width + self.padding * 2) / scale)
-			height = self.height + self.padding * 2
+			width  = math.ceil((self.innerWidth + self.padding * 2) / scale)
+			height = self.innerHeight + self.padding * 2
 
 		return width, height
 
-	def getPackedMaxSize(self):
-		#widths, heights = zip(
-			#self.getPackedSize(flip) for flip in self.flipModes
-		#)
-
-		#return max(widths), max(heights)
-		return self.getPackedSize(self.flipModes[0])
+	def getPackedMaxWidth(self):
+		return max(self.getPackedSize(flip)[0] for flip in self.flipModes)
 
 	def getPathologicalMult(self):
-		return (self.width * self.height) * \
-			max(self.width, self.height) / min(self.width, self.height)
+		return \
+			(self.innerWidth * self.innerHeight) * \
+			max(self.innerWidth, self.innerHeight) / \
+			min(self.innerWidth, self.innerHeight)
 
 	def canBePlaced(self, x, y, flip = False):
 		width, height = self.getPackedSize(flip)
@@ -100,6 +120,29 @@ class ImageWrapper:
 			max(0, (x % texpageWidth)   + width  - texpageWidth),
 			max(0, (y % TEXPAGE_HEIGHT) + height - TEXPAGE_HEIGHT)
 		)
+
+	def getPaletteXY(self):
+		if self.palettePage is None:
+			return 0
+
+		return (self.px // 16) | (self.py << 6)
+
+	def getFlags(self):
+		flags = {
+			4:  ImageFlags.BPP_4,
+			8:  ImageFlags.BPP_8,
+			16: ImageFlags.BPP_16
+		}[self.bpp]
+
+		if self.field is not None:
+			flags |= ImageFlags.INTERLACE_ODD if self.field \
+				else ImageFlags.INTERLACE_EVEN
+		if self.innerWidth < self.width or self.innerHeight < self.height:
+			flags |= ImageFlags.HAS_MARGIN
+		if self.flip:
+			flags |= ImageFlags.FLIP
+
+		return flags
 
 	def getHash(self):
 		return hash(self.data.tobytes())
@@ -123,7 +166,8 @@ class ImageWrapper:
 			self.palette,
 			self.margin,
 			self.padding,
-			self.flipModes
+			self.flipModes,
+			field
 		)
 
 	def getPackedData(self):
@@ -242,15 +286,49 @@ FLIP_MODES = CaseDict({
 	"preferFlipped":   ( True, False )
 })
 
+def _processExistingPalette(name, image, maxNumColors, customPalette):
+	if image.mode != "P":
+		return None, None
+
+	if customPalette is not None:
+		logging.warning(f"({name}) re-quantizing indexed color image to apply custom palette")
+		return None, None
+
+	# Calculate how many entries there are in the palette. Pillow makes this
+	# non-trival for some reason.
+	paletteData = image.palette.tobytes()
+	numColors   = len(paletteData) // {
+		"RGB":  3,
+		"RGBA": 4,
+		"L":    1
+	}[image.palette.mode]
+
+	# If the number of entries is low enough, convert the palette to RGBA format
+	# (by generating an Nx1 bitmap out of it) and from there to a NumPy array.
+	if numColors > maxNumColors:
+		logging.warning(f"({name}) re-quantizing indexed color image due to existing palette being too large")
+		return None, None
+
+	logging.debug(f"({name}) image has valid {_numColors}-color palette, skipping quantization")
+
+	palette = Image.frombytes(image.palette.mode, ( numColors, 1 ), paletteData)
+	palette = numpy.array(palette.convert("RGBA"), numpy.uint8)
+	palette = palette.reshape(( _numColors, 4 ))
+
+	return palette, numpy.array(image, numpy.uint8)
+
 def convertImage(image, options):
 	"""
 	Downscales and optionally quantizes a PIL image using the given dict of
-	options. Returns an ImageWrapper object.
+	options. Yields a series of ImageWrapper objects, each representing a mipmap
+	level.
 	"""
 
 	name       = options.get("name", "<unknown>")
+	mipLevels  = int(options["mipLevels"])
 	crop       = map(int, options["crop"])
 	scale      = float(options["scale"])
+	mipScale   = float(options["mipScale"])
 	bpp        = int(options["bpp"])
 	palette    = PALETTES[options["palette"]]
 	dither     = float(options["dither"])
@@ -270,109 +348,77 @@ def convertImage(image, options):
 		min(y + height, image.height)
 	))
 
-	# Throw an error if attempting to rescale an image that already has a
-	# palette, since indexed color images can only be scaled using nearest
-	# neighbor interpolation (and it generally doesn't make sense to do so).
-	if scale != 1.0:
-		if image.mode == "P":
+	numColors  = 2 ** bpp
+	blackRepl  = (blackValue[0] & 31)
+	blackRepl |= (blackValue[1] & 31) << 5
+	blackRepl |= (blackValue[2] & 31) << 10
+	blackRepl |= (blackValue[3] &  1) << 15
+
+	for mipLevel in range(mipLevels):
+		# Throw an error if attempting to rescale an image that already has a
+		# palette, since indexed color images can only be scaled using nearest
+		# neighbor interpolation (and it generally doesn't make sense to do so).
+		# TODO: handle this in a "better" way for mipmapped images
+		if scale == 1.0:
+			scaledImage = _image
+		elif _image.mode == "P":
 			raise RuntimeError(f"({name}) can't rescale indexed color image")
-
-		_image = _image.resize((
-			int(_image.width  * scale),
-			int(_image.height * scale)
-		), scaleMode)
-
-	# Trim any empty borders around the image (but save the number of pixels
-	# trimmed when cropMode = "preserveMargin", so the margin can be restored
-	# on the PS1 side when drawing the image). The padding option optionally
-	# re-adds an empty border around the image as a workaround for GPU sampling
-	# quirks.
-	if cropMode in ( "preservemargin", "removemargin" ):
-		if (margin := _image.getbbox()) is None:
-			raise RuntimeError(f"({name}) image is empty")
-
-		_image = _image.crop(margin)
-
-	if cropMode != "preservemargin":
-		margin = 0, 0
-
-	data      = None
-	numColors = 2 ** bpp
-
-	_blackValue  = (blackValue[0] & 31)
-	_blackValue |= (blackValue[1] & 31) << 5
-	_blackValue |= (blackValue[2] & 31) << 10
-	_blackValue |= (blackValue[3] &  1) << 15
-
-	if bpp == 16:
-		if _image.mode == "P":
-			logging.warning(f"({name}) converting indexed color back to 16bpp")
-
-		data = toPS1ColorSpace2D(
-			numpy.array(_image.convert("RGBA"), numpy.uint8),
-			*alphaRange,
-			_blackValue
-		)
-
-		return ImageWrapper(data, None, margin[0:2], padding, flipModes)
-
-	# If the image is in a suitable indexed format already, generate a 16x1 or
-	# 256x1 bitmap out of its palette.
-	if _image.mode == "P":
-		if palette is not None:
-			logging.warning(f"({name}) re-quantizing indexed color image to apply custom palette")
 		else:
-			# Calculate how many entries there are in the palette. Pillow makes
-			# this non-trival for some reason.
-			paletteData = _image.palette.tobytes()
-			_numColors  = len(paletteData) // {
-				"RGB":  3,
-				"RGBA": 4,
-				"L":    1
-			}[_image.palette.mode]
+			scaledImage = _image.resize((
+				int(_image.width  * scale),
+				int(_image.height * scale)
+			), scaleMode)
 
-			# If the number of entries is low enough, convert the palette to
-			# RGBA format (by generating an Nx1 bitmap out of it) and from
-			# there to a NumPy array.
-			if _numColors > numColors:
-				logging.warning(f"({name}) re-quantizing indexed color image due to existing palette being too large")
-			else:
-				logging.debug(f"({name}) image has a valid {_numColors}-color palette, skipping quantization")
+		if bpp == 16:
+			if scaledImage.mode == "P":
+				logging.warning(f"({name}) converting indexed color back to 16bpp")
 
-				_palette = Image.frombytes(
-					_image.palette.mode,
-					( _numColors, 1 ),
-					paletteData
+			imageData   = numpy.array(scaledImage.convert("RGBA"), numpy.uint8)
+			imageData   = toPS1ColorSpace2D(imageData, *alphaRange, blackRepl)
+			paletteData = None
+		else:
+			paletteData, imageData = _processExistingPalette(
+				name, scaledImage, numColors, palette
+			)
+
+			# If the image is not indexed color or the palette is incompatible
+			# with the desidered format (see above), quantize the image.
+			if imageData is None:
+				paletteData, imageData = quantizeImage(
+					numpy.array(scaledImage.convert("RGBA"), numpy.uint8),
+					numColors,
+					palette,
+					5, # PS1 color depth (15bpp = 5bpp per channel)
+					dither
 				)
-				_palette = numpy.array(_palette.convert("RGBA"), numpy.uint8)
-				_palette = _palette.reshape(( _numColors, 4 ))
-				data     = numpy.array(_image, numpy.uint8)
 
-	# If the image is not indexed color or the palette is incompatible with the
-	# desidered format (see above), quantize the image.
-	# NOTE: I didn't use Pillow's built-in quantization functions as they are
-	# crap and don't support RGBA images/palettes properly. Using libimagequant
-	# manually (via the _native DLL) yields much better results.
-	if data is None:
-		_palette, data = quantizeImage(
-			numpy.array(_image.convert("RGBA"), numpy.uint8),
-			numColors,
-			palette,
-			5, # PS1 color depth (15bpp = 5bpp per channel)
-			dither
+			# Pad the palette with null entries and sort it by each color's
+			# packed RGB value, remapping the pixel data accordingly.
+
+			paletteData = numpy.r_[
+				paletteData,
+				numpy.zeros(( numColors - paletteData.shape[0], 4 ), numpy.uint8)
+			]
+
+			mapping     = paletteData.view(numpy.uint32).flatten().argsort()
+			imageData   = mapping.argsort().astype(numpy.uint8)[imageData]
+			paletteData = toPS1ColorSpace(
+				paletteData[mapping], *alphaRange, blackRepl
+			)
+
+		# Trim any empty borders around the image (but save the number of pixels
+		# trimmed when cropMode = "preserveMargin", so the margin can be
+		# restored when drawing the image). The padding option optionally adds a
+		# new empty border around the image as a workaround for GPU sampling
+		# quirks.
+		if cropMode in ( "preservemargin", "removemargin" ):
+			imageData, leftMargin, rightMargin = cropArray(imageData)
+		if cropMode != "preservemargin":
+			leftMargin  = 0, 0
+			rightMargin = 0, 0
+
+		scale *= mipScale
+
+		yield ImageWrapper(
+			imageData, paletteData, leftMargin, rightMargin, padding, flipModes
 		)
-
-	# Pad the palette with null entries.
-	_palette = numpy.r_[
-		_palette,
-		numpy.zeros(( numColors - _palette.shape[0], 4 ), numpy.uint8)
-	]
-
-	# Sort the palette (inaccurately) by the average brightness of each color
-	# and remap the pixel data accordingly, then perform color space conversion
-	# on the palette.
-	mapping  = _palette.view(numpy.uint32).flatten().argsort()
-	data     = mapping.argsort().astype(numpy.uint8)[data]
-	_palette = toPS1ColorSpace(_palette[mapping], *alphaRange, _blackValue)
-
-	return ImageWrapper(data, _palette, margin[0:2], padding, flipModes)

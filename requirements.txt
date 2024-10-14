@@ -1,8 +1,0 @@
-# These dependencies must be installed prior to building/running the tools.
-# This can be done with the usual pip command:
-#   (Windows)     py -3 -m pip install -r requirements.txt
-#   (Linux/macOS) python3 -m pip install -r requirements.txt
-
-av     >= 8.0.3
-numpy  >= 1.19.4
-Pillow >= 8.2.0

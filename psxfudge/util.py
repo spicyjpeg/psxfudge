@@ -1,52 +1,74 @@
 # -*- coding: utf-8 -*-
-# (C) 2022 spicyjpeg
+# (C) 2022-2023 spicyjpeg
 
-import re, math, logging, json
+"""Internal utility library
+
+This module contains various helper classes and functions used internally.
+"""
+
+import re, math, json
 from time        import gmtime
 from pathlib     import Path
 from collections import UserDict
 from ast         import literal_eval
 from struct      import Struct
 from tempfile    import mkdtemp
-from argparse    import ArgumentParser, FileType, Action
 
 import numpy
 
 ## Array/string/iterator utilities
 
 def blitArray(source, dest, position):
-	pos = (  (x if x >= 0 else None) for x in position )
-	neg = ( (-x if x  < 0 else None) for x in position )
+	"""
+	Copies the contents of the source array to the destination array at the
+	given position (which should be a list or tuple containing an integer for
+	each dimension of the source and destination arrays).
+	"""
+
+	pos = map(lambda x: x if x >= 0 else None, position)
+	neg = map(lambda x: -x if x < 0 else None, position)
 
 	destView = dest[tuple(
-		slice(x, None) for x in pos
+		slice(start, None) for start in pos
 	)]
 	sourceView = source[tuple(
-		slice(*args) for args in zip(neg, destView.shape)
+		slice(start, end) for start, end in zip(neg, destView.shape)
 	)]
 
 	destView[tuple(
-		slice(None, x) for x in source.shape
+		slice(None, end) for end in source.shape
 	)] = sourceView
 
-def unpackNibbles2D(data, highNibbleFirst = False):
+def cropArray(data, value = 0):
 	"""
-	Unpacks the low and high nibbles in a NumPy 2D array of bytes and returns
-	a new array whose width is doubled.
+	Removes all outer rows and columns whose value matches the provided one from
+	an array and returns a ( data, croppedLeft, croppedRight ) tuple.
 	"""
 
-	if data.ndim != 2:
-		raise ValueError("source array must be 2D")
+	indices  = numpy.argwhere(data != value)
+	minBound = indices.min(0)
+	maxBound = indices.max(0) + 1
 
-	unpacked = numpy.zeros((
-		data.shape[0],
-		data.shape[1] * 2
-	), data.dtype)
+	cropped = data[tuple(
+		slice(start, end) for start, end in zip(minBound, maxBound)
+	)]
 
-	unpacked[:, (1 if highNibbleFirst else 0)::2] = data & 0xf
-	unpacked[:, (0 if highNibbleFirst else 1)::2] = (data >> 4) & 0xf
+	return cropped, tuple(minBound), tuple(data.shape - maxBound)
 
-	return unpacked
+def unpackNibbles(data, highNibbleFirst = False):
+	"""
+	Unpacks the low and high nibbles in a NumPy array of bytes and returns a
+	new array whose last dimension is doubled.
+	"""
+
+	length   = numpy.product(data.shape)
+	unrolled = data.reshape(length)
+	unpacked = numpy.zeros(length * 2, data.dtype)
+
+	unpacked[(1 if highNibbleFirst else 0)::2] = unrolled & 0xf
+	unpacked[(0 if highNibbleFirst else 1)::2] = (unrolled >> 4) & 0xf
+
+	return unpacked.reshape(data.shape[:-1] + ( data.shape[-1] * 2, ))
 
 def alignToMultiple(data, length, padding = b"\x00"):
 	"""
@@ -121,7 +143,8 @@ def toMSDOSTime(unixTime = None):
 
 ## String manipulation
 
-RANGE_ITEM_REGEX = re.compile(r"([0-9]+)(?:\s*?-\s*?([0-9]+)(?:\s*?:\s*?([0-9]+))?)?")
+INT_VALUE_REGEX  = re.compile(r"[-+]?\s*(?:0x[0-9a-f]+|0o[0-7]+|0b[01]+|[0-9]+)")
+RANGE_ITEM_REGEX = re.compile(fr"({INT_VALUE_REGEX.pattern})(?:\s*?-\s*?({INT_VALUE_REGEX.pattern})(?:\s*?:\s*?({INT_VALUE_REGEX.pattern}))?)?", re.IGNORECASE)
 
 def _isWithinBounds(value, minValue = None, maxValue = None):
 	if minValue is not None and value < minValue:
@@ -138,29 +161,33 @@ def parseRange(_range, minValue = None, maxValue = None):
 	"1 8-10 3-7:2") and yields all values (e.g. [ 1, 8, 9, 10, 3, 5, 7 ]).
 	"""
 
-	if type(_range) is not str:
-		for value in _range:
-			if _isWithinBounds(value, minValue, maxValue):
-				yield value
+	if type(_range) is int:
+		if _isWithinBounds(_range, minValue, maxValue):
+			yield _range
 
-		return
+	elif type(_range) is str:
+		for _match in RANGE_ITEM_REGEX.finditer(_range):
+			start, end, stride = _match.groups()
 
-	for _match in RANGE_ITEM_REGEX.finditer(_range):
-		start, end, stride = _match.groups()
+			if end is None:
+				value = int(start, 0)
 
-		if end is None:
-			value = int(start, 0)
+				if _isWithinBounds(value, minValue, maxValue):
+					yield value
+			else:
+				_start, _end = int(start, 0), int(end, 0)
+				_stride      = 1 if stride is None else int(stride, 0)
 
-			if _isWithinBounds(value, minValue, maxValue):
-				yield value
-		else:
-			_start, _end = int(start, 0), int(end, 0)
+				yield from range(
+					(_start if minValue is None else max(minValue, _start)),
+					(_end   if maxValue is None else min(maxValue, _end)) + _stride,
+					_stride
+				)
 
-			yield from range(
-				(_start if minValue is None else max(minValue, _start)),
-				(_end   if maxValue is None else min(maxValue, _end)) + 1,
-				1       if stride   is None else int(stride, 0)
-			)
+	else:
+		# Interpret the range as an iterable of strings and/or ints.
+		for item in _range:
+			yield from parseRange(item, minValue, maxValue)
 
 def isWithinRange(value, _range):
 	"""
@@ -169,23 +196,31 @@ def isWithinRange(value, _range):
 	"1 8-10 3-7:2") and checks whether the given value is within the range.
 	"""
 
-	if type(_range) is not str:
-		return (value in _range)
+	if type(_range) is int:
+		return (value == _range)
 
-	for _match in RANGE_ITEM_REGEX.finditer(_range):
-		start, end, stride = _match.groups()
+	elif type(_range) is str:
+		for _match in RANGE_ITEM_REGEX.finditer(_range):
+			start, end, stride = _match.groups()
 
-		if end is None:
-			if value == int(start, 0):
+			if end is None:
+				if value == int(start, 0):
+					return True
+			else:
+				_start, _end = int(start, 0), int(end, 0)
+				_stride      = 1 if stride is None else int(stride, 0)
+
+				if \
+					(_stride > 0 and value >= _start and value <= _end) or \
+					(_stride < 0 and value <= _start and value >= _end):
+					if not ((value - _start) % int(stride, 0)):
+						return True
+
+	else:
+		# Interpret the range as an iterable of strings and/or ints.
+		for item in _range:
+			if isWithinRange(value, item):
 				return True
-		else:
-			_start, _end = int(start, 0), int(end, 0)
-
-			if value >= _start and value <= _end:
-				if stride is None:
-					return True
-				if not ((value - _start) % int(stride, 0)):
-					return True
 
 	return False
 
@@ -245,7 +280,6 @@ def iteratePaths(paths):
 COMMENT_REGEX = {
 	"shell":  re.compile(r"((?:\".*\"|'.*'|[^\"'])*?)(?:\#.*)?$", re.MULTILINE),
 	"python": re.compile(r"((?:\".*\"|'.*'|[^\"'])*?)(?:(?:\#.*)?$|\"\"\"(?:.|\n)*?\"\"\"|'''(?:.|\n)*?''')", re.MULTILINE),
-	#"js":     re.compile(r"((?:\".*\"|'.*'|[^\"'])*?)(?:\/\/.*)?$"),
 	"js":     re.compile(r"((?:\".*\"|'.*'|[^\"'])*?)(?:(?:\/\/.*)?$|\/\*(?:.|\n)*?\*\/)", re.MULTILINE)
 }
 
@@ -304,105 +338,6 @@ class CaseDict(UserDict):
 
 	def items(self):
 		return self.data.values()
-
-## Command line argument parser
-
-class _ListPropertiesAction(Action):
-	def __init__(self, **namedArgs):
-		namedArgs["nargs"] = 0
-		super().__init__(**namedArgs)
-
-	def __call__(self, parser, namespace, values, option):
-		maxLength  = max(map(len, parser.defaultProperties.keys()))
-		properties = "\n".join(
-			f"  {key.ljust(maxLength)} = {json.dumps(value)}"
-			for key, value in parser.defaultProperties.items()
-		)
-
-		parser.exit(0, f"Default property values:\n{properties}")
-
-class ArgParser(ArgumentParser):
-	"""
-	An enhanced subclass of argparse.ArgumentParser that automatically sets up
-	logging, common options and handles property parsing.
-	"""
-
-	def __init__(self, description, defaultProperties = None):
-		super().__init__(
-			description  = description,
-			epilog       = "This tool is part of the PSXFudge toolkit.",
-			add_help     = False,
-			allow_abbrev = False
-			#fromfile_prefix_chars = "@"
-		)
-		self.defaultProperties = defaultProperties
-
-		group = self.add_argument_group("Tool options")
-		group.add_argument(
-			"-h", "--help",
-			action = "help",
-			help   = "Show this help message and exit"
-		)
-		group.add_argument(
-			"-v", "--verbose",
-			action = "count",
-			help   = "Increase logging verbosity (-v = info, -vv = info + debug)"
-		)
-
-		if defaultProperties is not None:
-			group.add_argument(
-				"-L", "--list-properties",
-				action = _ListPropertiesAction,
-				help   = "List all supported properties and their default values and exit"
-			)
-
-			group = self.add_argument_group("Configuration options")
-			group.add_argument(
-				"-s", "--set",
-				action  = "append",
-				type    = str,
-				help    = "Set the value of a property (use JSON syntax to specify value)",
-				metavar = "property=value"
-			)
-			group.add_argument(
-				"-p", "--properties",
-				type    = FileType("rt"),
-				help    = "Read properties from the root object of the specified JSON file",
-				metavar = "file"
-			)
-
-	def parse(self, args = None):
-		args = self.parse_args(args)
-
-		logging.basicConfig(
-			format = "[%(funcName)-13s %(levelname)-7s] %(message)s",
-			level  = (
-				logging.WARNING,
-				logging.INFO,    # -v
-				logging.DEBUG    # -vv
-			)[min(args.verbose or 0, 2)]
-		)
-
-		if self.defaultProperties is not None:
-			properties = CaseDict(self.defaultProperties)
-
-			if args.properties:
-				with args.properties as _file:
-					try:
-						properties.update(parseJSON(_file.read()))
-					except:
-						self.error(f"failed to parse properties from {args.properties.name}")
-			if args.set:
-				for arg in args.set:
-					try:
-						key, value = arg.split("=", 1)
-						properties[key] = json.loads(value)
-					except:
-						self.error(f"invalid property specification: {arg}")
-
-			args.properties = properties
-
-		return args
 
 ## Persistent cache directory
 

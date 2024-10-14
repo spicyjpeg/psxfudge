@@ -7,8 +7,8 @@ from enum    import IntFlag
 from pathlib import Path
 
 import numpy, av
-from ._native import SPUBlockEncoder
-from ._util   import alignMutableToMultiple, swapEndianness
+from .native import SPUBlockEncoder
+from .util   import alignMutableToMultiple, swapEndianness
 
 ## Sound wrapper class
 
@@ -70,7 +70,7 @@ class SoundWrapper:
 ## Audio file importer
 
 def _importAudio(avFile, channels, sampleRate, chunkLength = 0):
-	resampler = av.AudioResampler("s16p", channels, sampleRate)
+	resampler = av.AudioResampler("s16p", "stereo" if channels == 2 else "mono", sampleRate)
 	fifo      = av.AudioFifo()
 
 	with avFile:
@@ -104,7 +104,7 @@ def convertAudioStream(avFile, options):
 	containing encoded chunks for each channel.
 	"""
 
-	channels   = int(options["channels"])
+	channels    = int(options["channels"])
 	sampleRate  = int(options["sampleRate"])
 	interleave  = int(options["interleave"])
 	loopOffset  = float(options["loopOffset"])

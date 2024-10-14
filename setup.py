@@ -1,19 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-from setuptools   import setup, Extension
-from Cython.Build import cythonize
-from numpy        import get_include
+from setuptools import setup, Extension
+from numpy      import get_include
 
 setup(
-	packages = [
-		"psxfudge"
-	],
-	ext_modules = cythonize([
+	ext_modules = [
 		Extension(
-			"psxfudge._native",
-			[
-				"psxfudge/_native.pyx",
+			"psxfudge.native",
+			language      = "c++",
+			sources       = [
+				"psxfudge/native.pyx",
 				"libimagequant/blur.c",
 				"libimagequant/kmeans.c",
 				"libimagequant/libimagequant.c",
@@ -21,12 +18,14 @@ setup(
 				"libimagequant/mempool.c",
 				"libimagequant/nearest.c",
 				"libimagequant/pam.c"
-				#"libimagequant/remap.c"
 			],
-			include_dirs = [
+			include_dirs  = [
 				get_include(),
 				"libimagequant"
+			],
+			define_macros = [
+				( "NPY_NO_DEPRECATED_API", "NPY_1_7_API_VERSION" )
 			]
 		)
-	])
+	]
 )

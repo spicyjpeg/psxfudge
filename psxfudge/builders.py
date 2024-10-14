@@ -1,13 +1,19 @@
 # -*- coding: utf-8 -*-
-# (C) 2022 spicyjpeg
+# (C) 2022-2023 spicyjpeg
+
+"""Hash table and bundle file builders
+
+This module contains helper classes to generate PSXFudge hash tables and other
+types of files that contain them (currently only bundles).
+"""
 
 import math, logging
 from struct    import Struct
 from enum      import IntEnum
 from itertools import chain
 
-from ._packer import buildTexpages
-from ._util   import alignToMultiple, alignMutableToMultiple, hash32, \
+from .packer import buildTexturePages
+from .util   import alignToMultiple, alignMutableToMultiple, hash32, \
 	bestHashTableLength
 
 ## Index file generator
@@ -35,7 +41,7 @@ class IndexBuilder:
 		# INDEX_ENTRY_STRUCT is stored as a mutable list and not serialized
 		# immediately as we may have to modify .next later in case of hash
 		# collisions (see getHeader()).
-		self.entries[_hash] = [ _hash, offset, length, entryType, 0xffff ]
+		self.entries[_hash] = [ _hash, offset, length, entryType, 0 ]
 
 	def _buildTable(self):
 		# Round the optimal number of buckets up to the nearest power of 2 to
@@ -61,7 +67,7 @@ class IndexBuilder:
 			# If the bucket is already occupied, go through its chain to find
 			# the last chained item then link the new entry to its .next.
 			lastEntry = self.buckets[hashMod]
-			while lastEntry[4] != 0xffff:
+			while lastEntry[4]:
 				lastEntry = self.chained[lastEntry[4] - numBuckets]
 
 			lastEntry[4] = numBuckets + len(self.chained)
@@ -93,7 +99,7 @@ class IndexBuilder:
 				_entry     = entry.copy()
 				_entry[1] += globalOffset
 			else:
-				_entry = 0, 0, 0, 0xffff, 0xffff
+				_entry = 0, 0, 0, 0, 0
 
 			if extended:
 				data.extend(INDEX_EXT_ENTRY_STRUCT.pack(*_entry))
@@ -108,25 +114,27 @@ class IndexBuilder:
 
 ## Bundle file generator
 
-BUNDLE_HEADER_STRUCT  = Struct("< 11s B 4I")
-BUNDLE_HEADER_MAGIC   = b"fudgebundle"
-BUNDLE_HEADER_VERSION = 0x01
+BUNDLE_HEADER_STRUCT  = Struct("< 7s B 4I 4B")
+BUNDLE_HEADER_MAGIC   = b"fudgebn"
+BUNDLE_HEADER_VERSION = 0x02
+
 BG_HEADER_STRUCT      = Struct("< 4H")
-TEXTURE_HEADER_STRUCT = Struct("< 4B")
-TEXTURE_FRAME_STRUCT  = Struct("< 6B H")
+TEXTURE_HEADER_STRUCT = Struct("< 4H")
+TEXTURE_FRAME_STRUCT  = Struct("< 2H 6B H I")
 SOUND_HEADER_STRUCT   = Struct("< 4H")
 
 class EntryType(IntEnum):
 	FILE         = 0x0000
-	TEXTURE      = 0x0001 # Progressive animated texture
-	ITEXTURE     = 0x8001 # Interlaced animated texture
-	BG           = 0x0002 # Progressive background (in main RAM)
-	IBG          = 0x8002 # Interlaced background (in main RAM)
-	SOUND        = 0x0003
-	STRING_TABLE = 0x0004
+	TEXTURE      = 0x0010 # Progressive animated texture
+	ITEXTURE     = 0x0011 # Interlaced animated texture
+	BG           = 0x0020 # Progressive background (in main RAM)
+	IBG          = 0x0021 # Interlaced background (in main RAM)
+	SOUND        = 0x0030
+	STRING_TABLE = 0x0040
+	CUSTOM       = 0x8000
 
-DATA_SIZE      = 0x180000    # Approximately 1.5 MB for main data section
-VRAM_DATA_SIZE = 0x8000 * 20 # 20 texpages
+DATA_SIZE      = 0x180000 # Approximately 1.5 MB for main data section
+VRAM_DATA_SIZE = 0x100000 # 32 pages (not taking framebuffers into account)
 SPU_DATA_SIZE  = 0x7d000
 SECTOR_SIZE    = 0x800
 
@@ -140,7 +148,7 @@ class BundleBuilder(IndexBuilder):
 		super().__init__()
 
 		self.textures    = {}
-		self.allTextures = []
+		self.textureList = []
 
 		self.header   = None
 		self.vramData = bytearray()
@@ -156,31 +164,35 @@ class BundleBuilder(IndexBuilder):
 
 		logging.debug(f"({name}) type=0x{entryType:x}, offset=0x{len(self.data):x}")
 
-	def addTexture(self, name, images, interlaced = False):
-		if images[0].width > 255 or images[0].height > 255:
-			raise RuntimeError("textures must be 255x255 or smaller")
+	def addFile(self, name, data):
+		self.addEntry(name, data, EntryType.FILE)
 
+	def addTexture(self, name, images, interlaced = False):
 		header = bytearray(TEXTURE_HEADER_STRUCT.pack(
-			images[0].width,  # .width
-			images[0].height, # .height
-			images[0].bpp,    # .bpp
-			len(images)       # .numFrames
+			images[0][0].width,  # .width
+			images[0][0].height, # .height
+			len(images),         # .numFrames
+			len(images[0])       # .numMipLevels
 		))
 
 		# Save the offset at which each frame's header is going to be placed.
 		# As we don't yet know where each frame is going to be placed in VRAM,
 		# we have to generate blank frame entries which will be filled in later
 		# by _buildVRAM().
-		for image in images:
-			if interlaced:
-				fields = image.toInterlaced(0), image.toInterlaced(1)
-			else:
-				fields = image,
+		for frame in images:
+			for mipLevel in frame:
+				if mipLevel.innerWidth > 255 or mipLevel.innerHeight > 255:
+					raise RuntimeError("all frames' inner dimensions must be 255x255 or smaller")
 
-			self.textures[len(self.data) + len(header)] = fields
-			self.allTextures.extend(fields)
+				if interlaced:
+					fields = mipLevel.toInterlaced(0), mipLevel.toInterlaced(1)
+				else:
+					fields = mipLevel,
 
-			header.extend(b"\x00" * TEXTURE_FRAME_STRUCT.size * len(fields))
+				self.textures[len(self.data) + len(header)] = fields
+				self.textureList.extend(fields)
+
+				header.extend(bytes(TEXTURE_FRAME_STRUCT.size * len(fields)))
 
 		self.addEntry(
 			name,
@@ -190,7 +202,7 @@ class BundleBuilder(IndexBuilder):
 
 	def addBG(self, name, image, x, y, interlaced = False):
 		data = bytearray(BG_HEADER_STRUCT.pack(
-			x, y, image.width, image.height
+			x, y, image.innerWidth, image.innerHeight
 		))
 
 		if interlaced:
@@ -211,11 +223,11 @@ class BundleBuilder(IndexBuilder):
 
 		length      = sound.data.shape[1]
 		leftOffset  = len(self.spuData)
-		rightOffset = (leftOffset + length) if sound.data.shape[0] == 2 else 0
+		rightOffset = leftOffset
 
-		if \
-			(leftOffset + length) > SPU_DATA_SIZE or \
-			(rightOffset + length) > SPU_DATA_SIZE:
+		if sound.data.shape[0] == 2:
+			rightOffset += length
+		if (rightOffset + length) > SPU_DATA_SIZE:
 			raise RuntimeError("SPU RAM size limit exceeded")
 
 		header = SOUND_HEADER_STRUCT.pack(
@@ -260,15 +272,16 @@ class BundleBuilder(IndexBuilder):
 
 		self.addEntry(name, data, EntryType.STRING_TABLE)
 
-	def buildVRAM(self, *options, **kwOptions):
-		for page in buildTexpages(self.allTextures, *options, **kwOptions):
-			# Reorder the page data into 64x256 sections (for larger pages) and
-			# append it to the VRAM section.
-			for offset in range(0, page.shape[1], 128):
-				section = page[:, offset:(offset + 128)]
-				self.vramData.extend(section)
+	def _buildVRAM(self, *options, **kwOptions):
+		buckets = buildTexturePages(self.textureList, *options, **kwOptions)
 
-			yield page
+		for page in chain(*buckets):
+			# FIXME: for some reason self.vramData.extend(page) only works if
+			# there are no pages that have been split off from a >64x256 atlas
+			self.vramData.extend(page.tobytes())
+
+		if len(self.vramData) > VRAM_DATA_SIZE:
+			raise RuntimeError("VRAM size limit exceeded")
 
 		# Overwrite the dummy frame headers generated by addTexture() with the
 		# proper data.
@@ -278,34 +291,48 @@ class BundleBuilder(IndexBuilder):
 					(offset + TEXTURE_FRAME_STRUCT.size * index):
 					(offset + TEXTURE_FRAME_STRUCT.size * (index + 1))
 				] = TEXTURE_FRAME_STRUCT.pack(
-					field.x,       # .x
-					field.y,       # .y
-					*field.margin, # .marginX, .marginY
-					field.page,    # .page
-					field.flip,    # .flip
-					(field.px // 16) | (field.py << 6) # .palette
+					field.page,             # .imagePage
+					field.palettePage or 0, # .palettePage
+					field.x,                # .imageX
+					field.y,                # .imageY
+					*field.margin,          # .marginX, .marginY
+					field.innerWidth,       # .imageWidth
+					field.innerHeight,      # .imageHeight
+					field.getPaletteXY(),   # .paletteXY
+					field.getFlags()        # .flags
 				)
 
-	def generate(self):
-		headerLength = super().generate(True) + BUNDLE_HEADER_STRUCT.size
-		lengths      = len(self.vramData), len(self.spuData), len(self.data)
+		return buckets
 
-		self.header = bytearray(BUNDLE_HEADER_STRUCT.pack(
-			BUNDLE_HEADER_MAGIC,   # .magic
-			BUNDLE_HEADER_VERSION, # .version
-			headerLength,          # .headerLength
-			*lengths,              # .sectionLengths
-		))
+	def generate(self, *options, **kwOptions):
+		super().generate(True)
+		buckets = self._buildVRAM(*options, **kwOptions)
+
+		# As in addTexture(), the header section needs to be populated with a
+		# dummy header as the aligned lengths of each section are not yet known.
+		self.header = bytearray(BUNDLE_HEADER_STRUCT.size)
 		self.header.extend(super().serialize(True))
 
 		for section in ( self.header, self.vramData, self.spuData, self.data ):
 			alignMutableToMultiple(section, SECTOR_SIZE)
 
+		lengths = len(self.vramData), len(self.spuData), len(self.data)
+
+		self.header[0:BUNDLE_HEADER_STRUCT.size] = BUNDLE_HEADER_STRUCT.pack(
+			BUNDLE_HEADER_MAGIC,   # .magic
+			BUNDLE_HEADER_VERSION, # .version
+			len(self.header),      # .headerLength
+			*lengths,              # .sectionLengths
+			*map(len, buckets)     # .atlasCounts
+		)
+
 		logging.info("uncompressed section sizes:")
-		logging.info(f"header:    {headerLength:7d} bytes")
-		logging.info(f"VRAM data: {lengths[0]:7d} bytes ({100 * lengths[0] / VRAM_DATA_SIZE:4.1f}%)")
-		logging.info(f"SPU data:  {lengths[1]:7d} bytes ({100 * lengths[1] / SPU_DATA_SIZE:4.1f}%)")
-		logging.info(f"main data: {lengths[2]:7d} bytes ({100 * lengths[2] / DATA_SIZE:4.1f}%)")
+		logging.info(f"  header:    {len(self.header):7d} bytes")
+		logging.info(f"  VRAM data: {lengths[0]:7d} bytes ({100 * lengths[0] / VRAM_DATA_SIZE:4.1f}%)")
+		logging.info(f"  SPU data:  {lengths[1]:7d} bytes ({100 * lengths[1] / SPU_DATA_SIZE:4.1f}%)")
+		logging.info(f"  main data: {lengths[2]:7d} bytes ({100 * lengths[2] / DATA_SIZE:4.1f}%)")
+
+		return buckets
 
 	def serialize(self):
 		yield from ( self.header, self.vramData, self.spuData, self.data )
