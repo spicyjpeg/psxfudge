@@ -70,7 +70,7 @@ class SoundWrapper:
 ## Audio file importer
 
 def _importAudio(avFile, channels, sampleRate, chunkLength = 0):
-	resampler = av.AudioResampler("s16p", channels, sampleRate)
+	resampler = av.AudioResampler("s16p", "stereo" if channels == 2 else "mono", sampleRate)
 	fifo      = av.AudioFifo()
 
 	with avFile:
